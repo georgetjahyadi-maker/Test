@@ -167,7 +167,7 @@ export function localSources(s: GameState, st: Settlement): { src: Settlement; t
     for (const g of Object.keys(st.demand).sort()) {
       const want = st.demand[g];
       if (!(want > 0)) continue;
-      const netProd = (src.production[g] ?? 0) - (src.consumption[g] ?? 0) - (src.routeDraw[g] ?? 0);
+      const netProd = (src.production[g] ?? 0) + (src.idleCapacity?.[g] ?? 0) - (src.consumption[g] ?? 0) - (src.routeDraw[g] ?? 0);
       if (netProd < 2) continue;
       const give = Math.min(want, netProd * 1.5);
       t += give;
@@ -199,18 +199,22 @@ interface LegOptions {
  */
 function ensureLeg(s: GameState, origin: Settlement, dest: Settlement, owner: string, budget: number, needT: number, o: LegOptions): CommandResult {
   const cap = supplyCapacity(s, dest.id, origin.id);
-  const wantPax = !!o.passengers && o.passengers > cap.passengers * 1.1;
-  if (cap.tonnes >= needT * 1.2 && !wantPax) return { ok: true, info: 'Adequate' };
-  if (propellantLimited(s, dest.id, origin.id) && !wantPax) return { ok: true, info: 'Propellant-limited' };
+  const wantPax = !!o.passengers && o.passengers > cap.passengers * 1.1 + 5;
+  const wantCargo = cap.tonnes < needT * 1.2 && !propellantLimited(s, dest.id, origin.id);
+  if (!wantCargo && !wantPax) return { ok: true, info: cap.tonnes >= needT * 1.2 ? 'Adequate' : 'Propellant-limited' };
   const oNode = SITE[origin.siteId].node, dNode = SITE[dest.siteId].node;
-  const choice = bestDesignFor(s, oNode, dNode, owner, wantPax, o.accept);
+  // Crewed ships when travellers are waiting; otherwise the cheapest freight capacity
+  const crewed = (plan: RoutePlan) => plan.passengers > 0 && (!o.accept || o.accept(plan));
+  const choice = wantPax
+    ? bestDesignFor(s, oNode, dNode, owner, true, crewed) ?? (wantCargo ? bestDesignFor(s, oNode, dNode, owner, false, o.accept) : null)
+    : bestDesignFor(s, oNode, dNode, owner, false, o.accept);
   if (!choice) return { ok: false, error: `No available design can fly ${origin.name} → ${dest.name}.` };
   let route = Object.values(s.routes).find((r) => r.active && r.owner === owner && r.destination === dest.id && r.origin === origin.id);
   const fresh = !route;
   if (!route) route = createRoute(s, `${origin.name} → ${dest.name}`, owner, origin.id, dest.id, 'supply', o.priority);
   if (o.transship) route.transship = true;
-  const want = Math.max(0, needT * 1.3 - cap.tonnes);
-  const gap = want - reassignFleets(s, owner, route, want);
+  const want = wantCargo ? Math.max(0, needT * 1.3 - cap.tonnes) : 0;
+  const gap = want > 0 ? want - reassignFleets(s, owner, route, want) : 0;
   let ships = Math.ceil(Math.max(0, gap) / Math.max(1, choice.plan.capacityPerShipYear));
   if (wantPax && choice.plan.passengers > 0) ships = Math.max(ships, Math.ceil((o.passengers! - cap.passengers) / Math.max(1, choice.plan.passengers * choice.plan.tripsPerYear)));
   if (ships <= 0) return { ok: true, info: 'Reassigned' };
@@ -229,10 +233,17 @@ export function ensureLocalSupply(s: GameState, st: Settlement, owner: string, b
   const hub = earthHub(s);
   const srcs = localSources(s, st);
   if (srcs.length === 0) return { ok: true, info: 'No local source' };
-  const { src, tonnes } = srcs[0];
-  // One local feeder per destination: keep using an existing one from another source
-  const otherLocal = Object.values(s.routes).find((r) => r.active && !r.transship && r.destination === st.id && r.origin !== src.id && r.origin !== hub?.id && (r.stats.deliveredYear > 0 || s.day - r.created < 240));
-  if (otherLocal) return { ok: true, info: 'Local feeder exists' };
+  // Feeders already running from nearby producers
+  const feeders = Object.values(s.routes).filter((r) => r.active && !r.transship && r.destination === st.id && r.origin !== hub?.id && (r.stats.deliveredYear > 0 || s.day - r.created < 240));
+  const feederOrigins = new Set(feeders.map((r) => r.origin));
+  // Prefer topping up an existing feeder; open another only while they fall well short
+  const pick = srcs.find((x) => feederOrigins.has(x.src.id)) ?? srcs[0];
+  if (!feederOrigins.has(pick.src.id) && feeders.length > 0) {
+    const delivered = feeders.reduce((a, r) => a + r.stats.deliveredYear, 0);
+    const wanted = srcs.reduce((a, x) => a + x.tonnes, 0) * 12;
+    if (feeders.length >= 3 || delivered > wanted * 0.5) return { ok: true, info: 'Local feeder exists' };
+  }
+  const { src, tonnes } = pick;
   const oNode = SITE[src.siteId].node, dNode = SITE[st.siteId].node;
   // Only a net producer of the ships' propellant can run a local route (imported stock would
   // just pull more propellant up from Earth), and the ships must not refuel anywhere else
@@ -259,7 +270,8 @@ export function annualNeed(st: Settlement): { tonnes: number; passengers: number
   let through = 0;
   for (const g in st.routeDraw) through += Math.max(0, st.routeDraw[g] - (st.production[g] ?? 0));
   for (const g in st.forward ?? {}) through += st.forward![g];
-  return { tonnes: Math.max(t * 0.5, own + through * 12), passengers: ((st.flags.migrationDemand as number) ?? 0) * 12 };
+  const onward = (st.flags.paxForwardPrev as number) ?? 0;
+  return { tonnes: Math.max(t * 0.5, own + through * 12), passengers: (((st.flags.migrationDemand as number) ?? 0) + onward) * 12 };
 }
 
 /**

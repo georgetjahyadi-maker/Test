@@ -494,6 +494,7 @@ export interface Settlement {
   routeDraw: Stock; // propellant requested by visiting ships last month
   forward?: Stock; // goods that distribution legs departing here could not fill last month
   shortfall?: Stock; // fuel, spare parts and life-critical inputs facilities needed but lacked last month
+  idleCapacity?: Stock; // output plants held back last month because their products were overstocked
   closure: number;
   automation: number;
   science: number;
@@ -687,6 +688,8 @@ export interface Shipment {
   to: string;
   goods: Stock;
   passengers: number;
+  /** Passengers who will change ships here for a settlement further down the line. */
+  transitPax?: number;
   departDay: number;
   arriveDay: number;
   owner: ActorId;
@@ -834,6 +837,8 @@ export interface RegionMarket {
   floor: Record<GoodId, number>;
   supply: Stock;
   demand: Stock;
+  /** Decaying totals of freight billed on deliveries into the region from elsewhere. */
+  freightIn?: { t: number; cost: number };
 }
 
 export interface CollectorDesign {

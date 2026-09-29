@@ -74,6 +74,7 @@ export function createSettlement(
     routeDraw: {},
     forward: {},
     shortfall: {},
+    idleCapacity: {},
     closure: 0,
     automation: 1,
     science: 0,
@@ -164,6 +165,8 @@ export function createFleet(s: GameState, owner: string, designId: string, count
     const f = s.fleets[id];
     if (f.owner === owner && f.designId === designId && f.routeId === routeId && !f.patrolRegion) {
       f.condition = (f.condition * f.count + count) / Math.max(1, f.count + count);
+      // The merged fleet's age is the average of its hulls
+      f.built = Math.round((f.built * f.count + s.day * count) / Math.max(1, f.count + count));
       f.count += count;
       return f;
     }

@@ -89,8 +89,8 @@ export function marketsMonthly(s: GameState): void {
 
   // --- Regional aggregates --------------------------------------------------
   const regions = Object.keys(s.markets).filter((r) => r !== 'earth').sort();
-  const agg: Record<string, { supply: Record<string, number>; demand: Record<string, number>; count: number }> = {};
-  for (const r of regions) agg[r] = { supply: {}, demand: {}, count: 0 };
+  const agg: Record<string, { supply: Record<string, number>; demand: Record<string, number>; prod: Record<string, number>; use: Record<string, number>; count: number }> = {};
+  for (const r of regions) agg[r] = { supply: {}, demand: {}, prod: {}, use: {}, count: 0 };
   for (const id of Object.keys(s.settlements).sort()) {
     const st = s.settlements[id];
     const r = SITE[st.siteId].region;
@@ -101,18 +101,30 @@ export function marketsMonthly(s: GameState): void {
     for (const g in st.imports) a.supply[g] = (a.supply[g] ?? 0) + st.imports[g];
     for (const g in st.consumption) a.demand[g] = (a.demand[g] ?? 0) + st.consumption[g];
     for (const g in st.exports) a.demand[g] = (a.demand[g] ?? 0) + st.exports[g];
+    // Ships refuelling here buy propellant too
+    for (const g in st.routeDraw) a.demand[g] = (a.demand[g] ?? 0) + st.routeDraw[g];
     for (const g in st.demand) a.demand[g] = (a.demand[g] ?? 0) + st.demand[g] * 0.25;
+    // What the region makes (or could make at once) against what it uses
+    for (const g in st.production) a.prod[g] = (a.prod[g] ?? 0) + st.production[g];
+    for (const g in st.idleCapacity ?? {}) a.prod[g] = (a.prod[g] ?? 0) + st.idleCapacity![g];
+    for (const g in st.consumption) a.use[g] = (a.use[g] ?? 0) + st.consumption[g];
+    for (const g in st.routeDraw) a.use[g] = (a.use[g] ?? 0) + st.routeDraw[g];
+    for (const g in st.shortfall ?? {}) a.use[g] = (a.use[g] ?? 0) + st.shortfall![g];
   }
   const earthOrbitPrice = (g: string) => (s.earth.prices[g] ?? GOOD[g].price) + s.earth.launchPrice;
   for (const r of regions) {
     const m = s.markets[r];
     const a = agg[r];
     const propLocal = r === 'earthOrbit' ? earthOrbitPrice('propellant') : Math.min(m.prices.propellant ?? 1e6, earthOrbitPrice('propellant'));
+    // Freight actually billed on deliveries into the region, when there is enough traffic to tell
+    const fi = m.freightIn;
+    const observed = fi && fi.t > 200 ? Math.min(fi.cost / fi.t, earthOrbitPrice('propellant') * 20) : 0;
+    const inbound = Math.max(freightEstimate(s, 'earthOrbit', r, earthOrbitPrice('propellant')), observed);
     for (const g of GOODS) {
       const id = g.id;
       const earthP = s.earth.prices[id] ?? g.price;
       // import parity from Earth
-      const fromEarth = r === 'earthOrbit' ? earthOrbitPrice(id) : earthOrbitPrice(id) + freightEstimate(s, 'earthOrbit', r, earthOrbitPrice('propellant'));
+      const fromEarth = r === 'earthOrbit' ? earthOrbitPrice(id) : earthOrbitPrice(id) + inbound;
       let ceiling = fromEarth;
       // import parity from other regions with surplus
       for (const q of regions) {
@@ -134,17 +146,27 @@ export function marketsMonthly(s: GameState): void {
         if (nb > floor) floor = nb;
       }
       if (floor > ceiling) floor = ceiling * 0.95;
-      const S = a.supply[id] ?? 0;
-      const D = a.demand[id] ?? 0;
+      // Import parity while the region relies on imports, export netback once it makes a surplus
+      const P = a.prod[id] ?? 0;
+      const U = a.use[id] ?? 0;
+      let target: number;
+      if (P + U <= 1e-9) target = ceiling * 0.85;
+      else {
+        const w = clamp((P / Math.max(1e-9, U) - 0.8) / 0.6, 0, 1);
+        target = ceiling + (floor - ceiling) * w;
+      }
       let p = m.prices[id] ?? ceiling;
-      if (S + D <= 1e-9) p = p + (ceiling * 0.85 - p) * 0.2;
-      else p = p * Math.exp(0.3 * clamp((D - S) / (D + S), -1, 1));
+      p = p + (target - p) * 0.3;
       m.prices[id] = clamp(p, floor, ceiling);
       m.ceiling[id] = ceiling;
       m.floor[id] = floor;
     }
     m.supply = a.supply;
     m.demand = a.demand;
+    if (fi) {
+      fi.t *= 11 / 12;
+      fi.cost *= 11 / 12;
+    }
   }
   const em = s.markets.earth;
   for (const g of GOODS) {

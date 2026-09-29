@@ -76,6 +76,17 @@ function bestHabitat(s: GameState, st: Settlement, actor: string, deficit: numbe
   for (const t of options) {
     if (!canBuild(s, st, actor, t)) continue;
     const h = FACILITY[t].housing ?? 1;
+    // Megastructures are raised from local material: the region must supply the bulk within about five years
+    const mass = FACILITY[t].buildMass;
+    let total = 0, bulkGood = '', bulk = 0;
+    for (const g in mass) {
+      total += mass[g];
+      if (mass[g] > bulk) {
+        bulk = mass[g];
+        bulkGood = g;
+      }
+    }
+    if (total > 100000 && regionalOutput(s, regionOf(st), bulkGood) * 60 < bulk) continue;
     // Don't build something vastly larger than the settlement can fill
     if (h > Math.max(pop * 3, deficit * 4, 60) && t !== 'habModule' && t !== 'orbitalStation') continue;
     if (site.radiation > 5000 && (FACILITY[t].shielding ?? 0) < 0.99) continue;
@@ -83,6 +94,13 @@ function bestHabitat(s: GameState, st: Settlement, actor: string, deficit: numbe
     return { type: t, count, reason: `Housing short by ${Math.round(deficit)}`, priority: 9 };
   }
   return null;
+}
+
+/** Tonnes per month of a good made (or held back for want of buyers) across a region. */
+function regionalOutput(s: GameState, region: string, g: string): number {
+  let t = 0;
+  for (const o of Object.values(s.settlements)) if (regionOf(o) === region) t += (o.production[g] ?? 0) + (o.idleCapacity?.[g] ?? 0);
+  return t;
 }
 
 /** Reactor fuel is light: any settlement with a working supply route can get it. */
@@ -102,11 +120,17 @@ function bestEnergy(s: GameState, st: Settlement, actor: string, deficitMW: numb
   const fusionFuelled = hasFuel(st, 'fusionFuel', 0.45) || facilityCount(st, 'deuteriumPlant') + pendingCount(st, 'deuteriumPlant') > 0 || facilityCount(st, 'he3Harvester') > 0;
   if (canBuild(s, st, actor, 'fusionPlant') && deficitMW > 300 && fusionFuelled) opts.push({ t: 'fusionPlant', per: 2000 });
   if (canBuild(s, st, actor, 'moltenSaltReactor') && deficitMW > 60 && flux < 0.5) opts.push({ t: 'moltenSaltReactor', per: 200 });
-  // Long nights make batteries heavy; reactors win where they are available
+  // Long nights make batteries heavy; reactors win where they are available and actually get fuel
   const nights = site.illumination < 0.7;
-  if (nights && canBuild(s, st, actor, 'fissionReactor') && hasFuelSupply(s, st)) opts.push({ t: 'fissionReactor', per: 10 });
+  let rn = 0, ru = 0;
+  for (const f of st.facilities) if (f.type === 'fissionReactor' && f.count > 0) {
+    rn += f.count;
+    ru += f.utilization * f.count;
+  }
+  const fissionFed = rn === 0 || ru / rn >= 0.6;
+  if (nights && canBuild(s, st, actor, 'fissionReactor') && hasFuelSupply(s, st) && fissionFed) opts.push({ t: 'fissionReactor', per: 10 });
   if (flux >= 0.15) opts.push({ t: 'solarArray', per: 2 * flux * (nights ? 0.75 : 1) });
-  if (!nights && canBuild(s, st, actor, 'fissionReactor')) opts.push({ t: 'fissionReactor', per: 10 });
+  if (!nights && canBuild(s, st, actor, 'fissionReactor') && fissionFed) opts.push({ t: 'fissionReactor', per: 10 });
   if (opts.length === 0) opts.push({ t: 'solarArray', per: 2 * Math.max(0.01, flux) });
   const o = opts[0];
   const count = Math.max(1, Math.min(o.t === 'solarArray' ? 60 : 4, Math.ceil((deficitMW * 1.2) / o.per)));
@@ -125,7 +149,8 @@ export function suggestFacilities(s: GameState, st: Settlement, actor: string): 
   const housing = st.housing + housingPending(st);
   // Only grow what can be kept alive: no new housing while life-support reserves are thin
   const rd = st.lifeSupport.reserveDays;
-  const secure = Math.min(rd.water ?? 999, rd.oxygen ?? 999, rd.food ?? 999) > 45;
+  const partsShort = (st.shortfall?.machinery ?? 0) + (st.shortfall?.supplies ?? 0) > 1 + pop * 0.0005;
+  const secure = Math.min(rd.water ?? 999, rd.oxygen ?? 999, rd.food ?? 999, rd.supplies ?? 999) > 45 && !partsShort;
   if (housing < pop + (secure ? growth : 0)) {
     const h = bestHabitat(s, st, actor, pop + growth - housing);
     if (h) out.push(h);
@@ -143,8 +168,10 @@ export function suggestFacilities(s: GameState, st: Settlement, actor: string): 
     const e = bestEnergy(s, st, actor, demand * 1.15 - gen);
     if (e) out.push(e);
   }
-  if (site.illumination < 0.7 && facilityCount(st, 'solarArray') > 0 && st.energy.storage + pendingCount(st, 'batteryBank') * 60 < st.energy.demand * 24 * 5 && canBuild(s, st, actor, 'batteryBank')) {
-    out.push({ type: 'batteryBank', count: Math.min(10, Math.ceil((st.energy.demand * 24 * 5 - st.energy.storage) / 60)), reason: 'Night-time energy storage', priority: 6 });
+  // Storage only for the load that solar carries through the night
+  const storeNeed = Math.min(st.energy.demand, st.energy.bySource.solar ?? 0) * 24 * 5;
+  if (site.illumination < 0.7 && facilityCount(st, 'solarArray') > 0 && st.energy.storage + pendingCount(st, 'batteryBank') * 60 < storeNeed && canBuild(s, st, actor, 'batteryBank')) {
+    out.push({ type: 'batteryBank', count: Math.min(10, Math.ceil((storeNeed - st.energy.storage) / 60)), reason: 'Night-time energy storage', priority: 6 });
   }
   if ((site.kind === 'surface' || site.kind === 'asteroid' || site.kind === 'atmospheric') && st.landingCapacity <= 0 && pendingCount(st, 'landingPad') === 0) out.push({ type: 'landingPad', count: 1, reason: 'No spaceport', priority: 10 });
   else if (st.flags.portLimited && pendingCount(st, 'landingPad') === 0) out.push({ type: 'landingPad', count: Math.max(1, Math.ceil(facilityCount(st, 'landingPad') * 0.5)), reason: 'Spaceport congested', priority: 9 });
@@ -161,8 +188,12 @@ export function suggestFacilities(s: GameState, st: Settlement, actor: string): 
   if (pop > 60 && st.medical + pendingCount(st, 'hospital') * 2000 < pop) out.push({ type: 'hospital', count: Math.min(10, Math.ceil((pop - st.medical) / 2000)), reason: 'Medical coverage', priority: 7 });
   // Consumables and spare parts: local workshops once a settlement is big enough to run one
   const suppliesNeed = (pop * 0.15) / 12 + (st.shortfall?.supplies ?? 0);
-  const suppliesMade = (st.production.supplies ?? 0) + (pendingCount(st, 'fabShop') * 70) / 12;
-  if (pop > 300 && suppliesMade < suppliesNeed * 0.8 && canBuild(s, st, actor, 'fabShop')) out.push({ type: 'fabShop', count: Math.min(10, Math.max(1, Math.ceil((suppliesNeed - suppliesMade) / (70 / 12)))), reason: 'Local supplies and spare parts', priority: 8 });
+  const suppliesMade = (st.production.supplies ?? 0) + (pendingCount(st, 'fabShop') * 70 + pendingCount(st, 'metalWorks') * 60) / 12;
+  if (pop > 300 && suppliesMade < suppliesNeed * 0.8) {
+    // Workshops need carbon for polymers; where carbon is scarce, metal and glass goods fill the gap
+    if (canBuild(s, st, actor, 'fabShop') && inputsAvailable(s, st, 'fabShop')) out.push({ type: 'fabShop', count: Math.min(10, Math.max(1, Math.ceil((suppliesNeed - suppliesMade) / (70 / 12)))), reason: 'Local supplies and spare parts', priority: 8 });
+    else if (canBuild(s, st, actor, 'metalWorks') && inputsAvailable(s, st, 'metalWorks')) out.push({ type: 'metalWorks', count: Math.min(10, Math.max(1, Math.ceil((suppliesNeed - suppliesMade) / (60 / 12)))), reason: 'Local supplies from metal and glass', priority: 8 });
+  }
   if (pop > 150 && st.civic + pendingCount(st, 'civicCenter') * 3000 < pop) out.push({ type: 'civicCenter', count: Math.min(10, Math.ceil((pop - st.civic) / 3000)), reason: 'Civic facilities', priority: 5 });
   let stockT = 0;
   for (const g in st.stock) stockT += st.stock[g];
@@ -182,11 +213,20 @@ export function suggestFacilities(s: GameState, st: Settlement, actor: string): 
   }
   if (canBuild(s, st, actor, 'atmosphereProcessor') && facilityCount(st, 'atmosphereProcessor') + pendingCount(st, 'atmosphereProcessor') < Math.max(1, pop / 400)) out.push({ type: 'atmosphereProcessor', count: 1, reason: 'Atmospheric resources', priority: 6 });
   if (canBuild(s, st, actor, 'propellantPlant') && (st.production.water ?? 0) > 20 && facilityCount(st, 'propellantPlant') + pendingCount(st, 'propellantPlant') < 1 + Math.floor((st.production.water ?? 0) / 150)) out.push({ type: 'propellantPlant', count: 1, reason: 'Propellant production', priority: 5 });
+  // Oxygen-rich sites without much ice make hydrolox from their oxygen and a little imported hydrogen
+  const o2Spare = (st.production.oxygen ?? 0) + (st.idleCapacity?.oxygen ?? 0) - (st.consumption.oxygen ?? 0);
+  const propMade = (st.production.propellant ?? 0) + (st.idleCapacity?.propellant ?? 0);
+  if (canBuild(s, st, actor, 'loxPlant') && st.landingCapacity > 0 && o2Spare > 150 && propMade < 400 + (st.routeDraw.propellant ?? 0) && pendingCount(st, 'loxPlant') === 0 && facilityCount(st, 'loxPlant') < 1 + o2Spare / 900) out.push({ type: 'loxPlant', count: 1, reason: 'Propellant from local oxygen', priority: 6 });
   if (canBuild(s, st, actor, 'electrolysisPlant') && (st.production.water ?? 0) > 10 && (st.lifeSupport.reserveDays.oxygen ?? 999) < 200 && pendingCount(st, 'electrolysisPlant') === 0 && facilityCount(st, 'electrolysisPlant') < 1 + pop / 500) out.push({ type: 'electrolysisPlant', count: 1, reason: 'Local oxygen', priority: 6 });
   if (pop >= 40 && st.science < pop * 0.02 + 20 && pendingCount(st, 'researchLab') === 0 && facilityCount(st, 'researchLab') < 1 + pop / 2000) out.push({ type: 'researchLab', count: 1, reason: 'Science output', priority: 3 });
   if (pop > 20000 && facilityCount(st, 'university') + pendingCount(st, 'university') < pop / 200000 + 1) out.push({ type: 'university', count: 1, reason: 'Education', priority: 4 });
   if (canBuild(s, st, actor, 'automationHub') && pop > 800 && facilityCount(st, 'automationHub') + pendingCount(st, 'automationHub') < Math.max(1, st.jobs / 3000)) out.push({ type: 'automationHub', count: 1, reason: 'Automation', priority: 4 });
   if (site.kind === 'orbital' && canBuild(s, st, actor, 'propellantDepot') && facilityCount(st, 'propellantDepot') + pendingCount(st, 'propellantDepot') === 0) out.push({ type: 'propellantDepot', count: 1, reason: 'Refuelling hub', priority: 5 });
+  // Tankage for the fuel ships take on here each month
+  const throughput = (st.routeDraw.propellant ?? 0) + (st.routeDraw.hydrogen ?? 0);
+  if (!st.flags.earthHub && throughput > st.propellantCap * 0.8 && canBuild(s, st, actor, 'propellantDepot') && pendingCount(st, 'propellantDepot') === 0) {
+    out.push({ type: 'propellantDepot', count: Math.max(1, Math.min(4, Math.ceil((throughput * 1.2 - st.propellantCap) / 6000))), reason: 'Refuelling throughput', priority: 7 });
+  }
   // Industrial chain: substitute the most valuable imports
   const ind = industrialSuggestion(s, st, actor);
   if (ind) out.push(ind);
@@ -209,6 +249,8 @@ export function suggestFacilities(s: GameState, st: Settlement, actor: string): 
     const def = FACILITY[type];
     if (cond / n < 0.55) return false;
     if ((def.recipe && !def.gen) || def.mining) return util / n >= 0.45;
+    // Power plants standing cold for want of fuel
+    if (def.gen && def.recipe && Object.keys(def.recipe.in).length) return util / n >= 0.45;
     return true;
   };
   for (let i = out.length - 1; i >= 0; i--) if (!healthy(out[i].type)) out.splice(i, 1);
@@ -238,7 +280,7 @@ function totalExportsYear(st: Settlement): number {
   return t * 12;
 }
 
-const INDUSTRIAL = ['regolithRefinery', 'asteroidMiner', 'crustalMine', 'smelter', 'ceramicsWorks', 'chemicalPlant', 'fabShop', 'machineShop', 'electronicsFactory', 'semiconductorFab', 'pvFactory', 'superconductorPlant', 'fuelPlant', 'he3Harvester', 'gasScoop', 'deuteriumPlant', 'autoMiner', 'collectorFactory', 'autoFactory'];
+const INDUSTRIAL = ['regolithRefinery', 'asteroidMiner', 'crustalMine', 'smelter', 'ceramicsWorks', 'chemicalPlant', 'fabShop', 'metalWorks', 'machineShop', 'electronicsFactory', 'semiconductorFab', 'pvFactory', 'superconductorPlant', 'fuelPlant', 'he3Harvester', 'gasScoop', 'deuteriumPlant', 'autoMiner', 'collectorFactory', 'autoFactory'];
 
 /** Pick the industrial facility that substitutes the most valuable imports with local inputs. */
 export function industrialSuggestion(s: GameState, st: Settlement, actor: string): Suggestion | null {
@@ -247,6 +289,7 @@ export function industrialSuggestion(s: GameState, st: Settlement, actor: string
   for (const t of INDUSTRIAL) {
     if (!canBuild(s, st, actor, t)) continue;
     if (pendingCount(st, t) > 0) continue;
+    if (!inputsAvailable(s, st, t)) continue;
     const roi = estimateROI(s, st, t);
     if (roi.roi > bestScore && roi.roi > 0.04) {
       bestScore = roi.roi;
@@ -254,6 +297,26 @@ export function industrialSuggestion(s: GameState, st: Settlement, actor: string
     }
   }
   return best;
+}
+
+/**
+ * Can a new recipe plant be fed from spare local output, stock, or the region's spare
+ * supply? Industry built without its inputs just stands idle.
+ */
+export function inputsAvailable(s: GameState, st: Settlement, type: string, count = 1): boolean {
+  const def = FACILITY[type];
+  if (!def?.recipe || st.flags.earthHub) return true;
+  // Farms, life support and liquefaction plants have their small inputs shipped in
+  if (def.category === 'food' || def.category === 'lifeSupport' || type === 'loxPlant') return true;
+  const m = s.markets[regionOf(st)];
+  for (const g in def.recipe.in) {
+    const need = def.recipe.in[g] * count;
+    if (need <= 0) continue;
+    const local = Math.max(0, (st.production[g] ?? 0) + (st.idleCapacity?.[g] ?? 0) - (st.consumption[g] ?? 0)) * 12 + (st.stock[g] ?? 0) * 0.5;
+    const regional = m ? Math.max(0, (m.supply[g] ?? 0) - (m.demand[g] ?? 0)) * 12 * 0.5 : 0;
+    if (local + regional < need * 0.6) return false;
+  }
+  return true;
 }
 
 export interface ROI {

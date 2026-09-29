@@ -6,7 +6,7 @@ import { clamp } from '../core/util';
 import { rand, chance, gaussian, pick } from '../core/rng';
 import { mod } from '../systems/modifiers';
 import { popOf, settlementList, regionOf, isGoverned, isIndependent, addHistory, known } from '../systems/helpers';
-import { suggestFacilities, estimateROI, canBuild, totalCost, industrialSuggestion } from './planner';
+import { suggestFacilities, estimateROI, canBuild, totalCost, industrialSuggestion, inputsAvailable } from './planner';
 import { invest, ensureSupply } from './actions';
 import { foundingPlan, foundSettlement } from '../systems/colonies';
 import { makeCharacter } from '../systems/characters';
@@ -112,7 +112,10 @@ export function corporationsQuarterly(s: GameState): void {
       if (!allowed) continue;
       for (const f of focusTypes(c.focus)) {
         if (!canBuild(s, st, id, f)) continue;
+        if (!inputsAvailable(s, st, f)) continue;
         if (st.energy.ratio < 0.9 && (FACILITY[f]?.power ?? 0) > 0.1 && !FACILITY[f]?.gen) continue;
+        // A plant that would swamp the local grid waits until someone builds the power for it
+        if (!FACILITY[f]?.gen && (FACILITY[f]?.power ?? 0) > Math.max(2, (st.energy.gen - st.energy.demand) * 0.8)) continue;
         if (st.construction.some((p) => p.type === f && p.owner === id)) continue;
         const roi = estimateROI(s, st, f);
         if (roi.roi >= hurdle) candidates.push({ st, type: f, roi: roi.roi, cost: roi.capex });
@@ -140,8 +143,8 @@ export function corporationsQuarterly(s: GameState): void {
 function focusTypes(focus: string[]): string[] {
   const map: Record<string, string[]> = {
     mining: ['iceMine', 'regolithRefinery', 'asteroidMiner', 'crustalMine', 'he3Harvester', 'autoMiner', 'atmosphereProcessor', 'gasScoop'],
-    processing: ['propellantPlant', 'electrolysisPlant', 'smelter', 'ceramicsWorks', 'chemicalPlant', 'fuelPlant', 'deuteriumPlant'],
-    manufacturing: ['fabShop', 'machineShop', 'electronicsFactory', 'semiconductorFab', 'pvFactory', 'superconductorPlant'],
+    processing: ['propellantPlant', 'loxPlant', 'electrolysisPlant', 'smelter', 'ceramicsWorks', 'chemicalPlant', 'fuelPlant', 'deuteriumPlant'],
+    manufacturing: ['fabShop', 'metalWorks', 'machineShop', 'electronicsFactory', 'semiconductorFab', 'pvFactory', 'superconductorPlant'],
     energy: ['solarArray', 'fissionReactor', 'moltenSaltReactor', 'fusionPlant', 'beamReceiver'],
     habitat: ['habModule', 'buriedHab', 'domeDistrict', 'rotatingHab', 'stanfordTorus', 'oneillCylinder', 'aerostatHab'],
     lifeSupport: ['lifeSupport', 'greenhouse', 'algaeFarm'],
@@ -149,7 +152,7 @@ function focusTypes(focus: string[]): string[] {
     shipyard: ['shipyard'],
     dyson: ['collectorFactory', 'autoFactory', 'pvFactory'],
     science: ['researchLab'],
-    logistics: ['propellantDepot', 'propellantPlant'],
+    logistics: ['propellantDepot', 'propellantPlant', 'loxPlant'],
     launch: ['propellantDepot'],
   };
   const out = new Set<string>();

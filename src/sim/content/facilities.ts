@@ -236,6 +236,13 @@ export const FACILITIES: FacilityDef[] = [
     maintenance: { machinery: 1 }, opex: 5e6,
   },
   {
+    id: 'loxPlant', name: 'Propellant Liquefaction Plant', category: 'processing', allowed: ANYWHERE, tech: 'isru_propellant',
+    description: 'Liquefies oxygen won from regolith and blends it with hydrogen into hydrolox. Oxygen is six-sevenths of the propellant, so only the hydrogen has to be shipped in.',
+    buildCost: 6.0e8, buildMass: { machinery: 25, electronics: 3, alloys: 15 }, buildMonths: 6,
+    jobs: { technicians: 2 }, power: 2, recipe: { in: { oxygen: 860, hydrogen: 140 }, out: { propellant: 1000 } },
+    maintenance: { machinery: 1.2 }, opex: 5e6,
+  },
+  {
     id: 'propellantPlant', name: 'Propellant Plant', category: 'processing', allowed: ANYWHERE, tech: 'isru_propellant',
     description: 'Electrolysis and cryogenic liquefaction that produce hydrolox propellant from water.',
     buildCost: 8.0e8, buildMass: { machinery: 30, electronics: 3, alloys: 20 }, buildMonths: 6,
@@ -264,10 +271,17 @@ export const FACILITIES: FacilityDef[] = [
     maintenance: { machinery: 4 }, opex: 2e7,
   },
   {
+    id: 'metalWorks', name: 'Metal and Glass Works', category: 'manufacturing', allowed: ANYWHERE, tech: 'space_metallurgy',
+    description: 'Casting, sintering and glassblowing that turn local alloys and ceramics into tools, fittings and household goods. Settlements short of carbon make most of their supplies this way.',
+    buildCost: 5.0e8, buildMass: { machinery: 14, electronics: 2, alloys: 10 }, buildMonths: 6,
+    jobs: { industrial: 6, technicians: 2 }, power: 2, recipe: { in: { alloys: 45, ceramics: 30, electronics: 0.5 }, out: { supplies: 60 } },
+    maintenance: { machinery: 1 }, opex: 3e6,
+  },
+  {
     id: 'fabShop', name: 'Fabrication Workshop', category: 'manufacturing', allowed: ANYWHERE,
     description: 'Additive manufacturing and light assembly for spare parts, clothing, tools and consumer goods.',
     buildCost: 4.0e8, buildMass: { machinery: 12, electronics: 2, alloys: 8 }, buildMonths: 5,
-    jobs: { industrial: 5, technicians: 2 }, power: 1, recipe: { in: { alloys: 25, composites: 25, electronics: 0.3, carbon: 20 }, out: { supplies: 70 } },
+    jobs: { industrial: 5, technicians: 2 }, power: 1, recipe: { in: { alloys: 34, composites: 12, ceramics: 12, electronics: 0.3, carbon: 12 }, out: { supplies: 70 } },
     maintenance: { machinery: 1 }, opex: 3e6,
   },
   {

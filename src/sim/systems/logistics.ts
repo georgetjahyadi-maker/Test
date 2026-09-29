@@ -108,6 +108,7 @@ export function logisticsDaily(s: GameState): void {
       const culture = from && !from.flags.earthHub ? dominantOrigin(from) : 'terran';
       immigrate(dest, sh.passengers, culture);
       dest.pop.immigrants += sh.passengers;
+      if (sh.transitPax) dest.flags.transitPax = ((dest.flags.transitPax as number) ?? 0) + Math.min(sh.transitPax, sh.passengers);
     }
   }
   s.shipments = keep;
@@ -139,6 +140,8 @@ export function logisticsMonthly(s: GameState): void {
     const st = s.settlements[id];
     st.imports = {};
     st.exports = {};
+    st.economy.importsValue = 0;
+    st.economy.exportsValue = 0;
   }
   computeInTransit(s);
   computeNeeds(s);
@@ -182,16 +185,26 @@ function computeInTransit(s: GameState): void {
 function reserveMonths(st: Settlement, g: string): number {
   const region = regionOf(st);
   const far = region !== 'earthOrbit' && region !== 'luna';
+  // Reactor fuel is light and the lights go out without it: keep years in hand
+  if (g === 'reactorFuel') return far ? 36 : 24;
+  if (g === 'fusionFuel') return far ? 24 : 12;
   if (LIFE_GOODS.includes(g)) return far ? 20 : 5;
+  if (g === 'machinery' || g === 'photovoltaics') return far ? 12 : 4;
   // The LEO hub can launch propellant on demand; it only keeps a working buffer
   if (PROPELLANTS.includes(g)) return st.flags.earthHub ? 0 : far ? 6 : 0.5;
   return far ? 8 : 2;
 }
 
+/** Part of each settlement's demand needed within weeks rather than for reserves (set by computeNeeds). */
+const urgentNeed = new Map<string, Stock>();
+
 export function computeNeeds(s: GameState): void {
+  urgentNeed.clear();
   for (const id of Object.keys(s.settlements).sort()) {
     const st = s.settlements[id];
     const need: Stock = {};
+    const urgent: Stock = {};
+    urgentNeed.set(id, urgent);
     const surplus: Stock = {};
     const cons: Stock = { ...st.consumption };
     // route propellant draws count as consumption for depots, and so do inputs facilities lacked
@@ -214,12 +227,15 @@ export function computeNeeds(s: GameState): void {
     const fwd = st.forward ?? {};
     for (const g in fwd) goods.add(g);
     for (const g of [...goods].sort()) {
-      const net = (cons[g] ?? 0) - (st.production[g] ?? 0);
+      const net = (cons[g] ?? 0) - (st.production[g] ?? 0) - (st.idleCapacity?.[g] ?? 0);
       const reserve = reserveMonths(st, g);
       const target = Math.max(0, net) * (reserve + 1) + (constr[g] ?? 0) + (fwd[g] ?? 0);
       const have = (st.stock[g] ?? 0) + (st.inTransit[g] ?? 0);
       const n = target - have;
       if (n > 1e-3) need[g] = n;
+      // The next six weeks of use (and what shuttles pass on) ship before reserve top-ups
+      const soon = Math.min(Math.max(0, n), Math.max(0, net) * 1.5 + (fwd[g] ?? 0) - have);
+      if (soon > 1e-3) urgent[g] = soon;
       const spare = (st.stock[g] ?? 0) - Math.max(0, net) * reserve - (constr[g] ?? 0);
       if (spare > 1e-3) surplus[g] = spare;
     }
@@ -229,7 +245,10 @@ export function computeNeeds(s: GameState): void {
       const minRes: Stock = { oxygen: pop * 0.03, water: pop * 0.2, food: pop * 0.06, supplies: pop * 0.02 };
       for (const g in minRes) {
         const have = (st.stock[g] ?? 0) + (st.inTransit[g] ?? 0);
-        if (have < minRes[g]) need[g] = Math.max(need[g] ?? 0, minRes[g] - have);
+        if (have < minRes[g]) {
+          need[g] = Math.max(need[g] ?? 0, minRes[g] - have);
+          urgent[g] = Math.max(urgent[g] ?? 0, minRes[g] - have);
+        }
       }
     }
     if (st.flags.earthHub) for (const g of PROPELLANTS) delete need[g];
@@ -260,7 +279,7 @@ function supplyEarthHub(s: GameState): void {
     launchFees += t * lp;
   }
   hub.economy.treasury -= cost;
-  hub.economy.importsValue = cost * 12;
+  hub.economy.importsValue += cost * 12;
   distributeLaunchRevenue(s, launchFees);
 }
 
@@ -377,7 +396,15 @@ function runRoute(s: GameState, r: Route): void {
   let capYear = 0;
   // Demand to carry outbound
   const outboundNeeds = r.mode === 'export' ? exportList(s, origin, dest) : supplyList(dest);
-  const paxWanted = r.mode === 'export' ? 0 : Math.max(0, ((dest.flags.migrationDemand as number) ?? 0) - ((dest.flags.paxBooked as number) ?? 0));
+  const wantedAtStart = outboundNeeds.map((i) => ({ good: i.good, amount: i.amount }));
+  // Passengers for the destination itself and for settlements its shuttles serve
+  const ownPax = (dest.flags.migrationDemand as number) ?? 0;
+  const onwardPax = Math.max(0, ((dest.flags.paxForwardPrev as number) ?? 0) - ((dest.flags.transitPax as number) ?? 0));
+  let paxWanted = r.mode === 'export' ? 0 : Math.max(0, ownPax + onwardPax - ((dest.flags.paxBooked as number) ?? 0));
+  // Off the Earth hub, a shuttle can only carry travellers who have arrived to change ships
+  const hubLeg = r.transship && !origin.flags.earthHub;
+  const onwardWanted = hubLeg ? paxWanted : 0;
+  if (hubLeg) paxWanted = Math.min(paxWanted, (origin.flags.transitPax as number) ?? 0);
   let paxLeft = paxWanted;
   const shipGoods: Stock = {};
   let shipPax = 0;
@@ -513,13 +540,15 @@ function runRoute(s: GameState, r: Route): void {
     }
   }
   if (launched.fees > 0) distributeLaunchRevenue(s, launched.fees);
-  // Distribution legs pass what they could not load back up the chain
+  // A crewed shuttle asks the route feeding its hub to bring travellers for it
+  if (onwardWanted > 0 && rt.plans.some((p) => p.plan.feasible && p.plan.passengers > 0)) origin.flags.paxForward = ((origin.flags.paxForward as number) ?? 0) + onwardWanted;
+  // Distribution legs pass their whole monthly need up the chain, so the hub restocks
+  // what they take instead of alternating between empty and full
   if (r.transship && !origin.flags.earthHub && r.mode !== 'export') {
     let room = 0;
     for (const p of rt.plans) if (p.plan.feasible) room += (p.fleet.count * DAYS_MONTH / Math.max(1, p.plan.rttDays)) * p.plan.payload;
-    room = Math.max(0, room - tonnesOut);
     const fwd = (origin.forward ??= {});
-    for (const item of outboundNeeds) {
+    for (const item of wantedAtStart) {
       if (room <= 1e-6) break;
       if (!(item.amount > 1e-3)) continue;
       const f = Math.min(item.amount, room);
@@ -546,7 +575,14 @@ function runRoute(s: GameState, r: Route): void {
   for (const g in cargo) cargoT += cargo[g];
   if (cargoT > 1e-6 || shipPax > 0.01) {
     const arrive = s.day + Math.max(1, Math.round(transitDays));
-    s.shipments.push({ id: nextId(s, 'shp'), routeId: r.id, from: origin.id, to: dest.id, goods: cargo, passengers: shipPax, departDay: s.day, arriveDay: arrive, owner: r.owner });
+    const transitPax = ownPax + onwardPax > 0 ? shipPax * (onwardPax / (ownPax + onwardPax)) : 0;
+    s.shipments.push({ id: nextId(s, 'shp'), routeId: r.id, from: origin.id, to: dest.id, goods: cargo, passengers: shipPax, transitPax: transitPax > 0.01 ? transitPax : undefined, departDay: s.day, arriveDay: arrive, owner: r.owner });
+    if (hubLeg && shipPax > 0) {
+      // Travellers leave the hub's population as they board
+      origin.flags.transitPax = Math.max(0, ((origin.flags.transitPax as number) ?? 0) - shipPax);
+      const k = Math.min(1, shipPax / Math.max(1, popOf(origin)));
+      for (let i = 0; i < origin.pop.bands.length; i++) origin.pop.bands[i] *= 1 - k;
+    }
     for (const g in cargo) dest.demand[g] = Math.max(0, (dest.demand[g] ?? 0) - cargo[g]);
     dest.flags.paxBooked = ((dest.flags.paxBooked as number) ?? 0) + shipPax;
   }
@@ -574,11 +610,22 @@ function runRoute(s: GameState, r: Route): void {
     for (const g in shipGoods) origin.economy.treasury += shipGoods[g] * price(s, origin, g);
     credit(s, r.owner, Math.max(0, revenue), 'Export sales');
     debit(s, r.owner, totalCost, 'Export purchases');
-    origin.economy.exportsValue = totalCost * 12;
+    origin.economy.exportsValue += totalCost * 12;
   } else {
     dest.economy.treasury -= destPays;
-    dest.economy.importsValue = destPays * 12;
-    if (!origin.flags.earthHub) origin.economy.treasury += totalCost;
+    dest.economy.importsValue += destPays * 12;
+    if (!origin.flags.earthHub) {
+      origin.economy.treasury += totalCost;
+      origin.economy.exportsValue += totalCost * 12;
+    }
+    // What delivery into a region really costs feeds its import-parity prices
+    const ro = regionOf(origin), rd = regionOf(dest);
+    const mk = s.markets[rd];
+    if (ro !== rd && mk && carried > 0) {
+      const fi = (mk.freightIn ??= { t: 0, cost: 0 });
+      fi.t += carried;
+      fi.cost += freight * markup;
+    }
     credit(s, r.owner, freight * markup, 'Freight revenue');
     const subsidy = (m.freightSubsidy ?? 0) * freight * markup;
     if (subsidy > 0) {
@@ -635,10 +682,20 @@ function nodeName(s: GameState, node: string): string {
 }
 
 function supplyList(dest: Settlement): { good: string; amount: number }[] {
-  return Object.keys(dest.demand)
-    .filter((g) => dest.demand[g] > 1e-3)
-    .sort((a, b) => (GOOD_PRIORITY[a] ?? 5) - (GOOD_PRIORITY[b] ?? 5) || (a < b ? -1 : 1))
-    .map((g) => ({ good: g, amount: dest.demand[g] }));
+  const byPriority = (a: string, b: string) => (GOOD_PRIORITY[a] ?? 5) - (GOOD_PRIORITY[b] ?? 5) || (a < b ? -1 : 1);
+  const goods = Object.keys(dest.demand).filter((g) => dest.demand[g] > 1e-3).sort(byPriority);
+  // What is needed within weeks loads first, in priority order; reserve top-ups and construction follow
+  const urgent = urgentNeed.get(dest.id) ?? {};
+  const out: { good: string; amount: number }[] = [];
+  for (const g of goods) {
+    const u = Math.min(dest.demand[g], urgent[g] ?? 0);
+    if (u > 1e-3) out.push({ good: g, amount: u });
+  }
+  for (const g of goods) {
+    const rest = dest.demand[g] - Math.min(dest.demand[g], urgent[g] ?? 0);
+    if (rest > 1e-3) out.push({ good: g, amount: rest });
+  }
+  return out;
 }
 
 function exportList(s: GameState, origin: Settlement, dest: Settlement): { good: string; amount: number }[] {
@@ -769,10 +826,18 @@ function growLaunchIndustry(s: GameState): void {
 }
 
 /** Remove fleets whose last ships were lost or scrapped, and merge duplicates. */
+/** Hulls are retired once past their service life, so fleets renew with current designs. */
+const SERVICE_LIFE_DAYS = 25 * 365;
+
 function tidyFleets(s: GameState): void {
   const seen = new Map<string, string>();
   for (const id of Object.keys(s.fleets).sort()) {
     const f = s.fleets[id];
+    if (s.day - f.built > SERVICE_LIFE_DAYS && f.count > 0) {
+      const expect = f.count * 0.015;
+      const n = Math.floor(expect) + (rand(s, 'fleets') < expect - Math.floor(expect) ? 1 : 0);
+      f.count -= Math.min(f.count, n);
+    }
     if (!(f.count > 0.5)) {
       delete s.fleets[id];
       continue;
@@ -783,6 +848,7 @@ function tidyFleets(s: GameState): void {
     if (into) {
       const g = s.fleets[into];
       g.condition = (g.condition * g.count + f.condition * f.count) / (g.count + f.count);
+      g.built = Math.round((g.built * g.count + f.built * f.count) / (g.count + f.count));
       g.count += f.count;
       delete s.fleets[id];
     } else seen.set(key, id);
@@ -824,8 +890,11 @@ function pruneIdleRoutes(s: GameState): void {
 
 export function clearMonthlyFlags(s: GameState): void {
   for (const id in s.settlements) {
-    s.settlements[id].flags.paxBooked = 0;
-    s.settlements[id].flags.portLimited = false;
+    const f = s.settlements[id].flags;
+    f.paxBooked = 0;
+    f.portLimited = false;
+    f.paxForwardPrev = (f.paxForward as number) ?? 0;
+    f.paxForward = 0;
   }
 }
 

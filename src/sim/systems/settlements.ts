@@ -21,6 +21,9 @@ const BASE_MORTALITY = [0.004, 0.0003, 0.0003, 0.0006, 0.0008, 0.0009, 0.0011, 0
 
 const CATEGORY_ORDER: Record<string, number> = { energy: 0, mining: 1, processing: 2, food: 3, lifeSupport: 4, manufacturing: 5, infrastructure: 6, science: 7, civic: 8, security: 9, habitat: 10, dyson: 11 };
 const ESSENTIAL = new Set(['habitat', 'lifeSupport', 'civic', 'food']);
+const CRITICAL_UPKEEP = new Set(['lifeSupport', 'energy', 'food', 'habitat']);
+/** Plants that win residents' water and air get spare parts first too. */
+const LIFE_PLANTS = new Set(['iceMine', 'electrolysisPlant', 'regolithRefinery', 'atmosphereProcessor']);
 const PROPELLANT_GOODS = new Set(['propellant', 'hydrogen', 'argon']);
 
 export function localIdentity(st: Settlement): string {
@@ -111,6 +114,7 @@ function updateSettlement(s: GameState, st: Settlement): void {
   st.production = {};
   st.consumption = {};
   st.shortfall = {};
+  const idle: Stock = (st.idleCapacity = {});
   const flux = solarFluxFactor(site.body);
   const outputValueByOwner: Record<string, number> = {};
   let royaltyBase = 0;
@@ -202,6 +206,11 @@ function updateSettlement(s: GameState, st: Settlement): void {
       }
       const outs = Object.keys(def.recipe.out);
       if (outs.length && outs.every((g) => overstocked(g))) r = Math.min(r, 0.15);
+    } else if (def.mining) {
+      // Mines idle down (and draw little) when everything they would dig is overstocked
+      const dep = st.deposits.filter((d) => def.mining!.depositTypes.includes(d.type) && d.reserve > 0).sort((a, b2) => b2.grade / b2.difficulty - a.grade / a.difficulty)[0];
+      if (!dep) r = 0.05;
+      else if (!Object.keys(dep.yields).some((g) => dep.yields[g] > 0.002 && !overstocked(g))) r = 0.15;
     }
     return clamp(r, 0.05, 1);
   };
@@ -217,6 +226,14 @@ function updateSettlement(s: GameState, st: Settlement): void {
   const bySource: Record<string, number> = {};
   let gen = 0;
   const demandTotal = essentialDemand + industrialDemand;
+  // Storage only has to carry the share of demand that solar serves through the night
+  let solarRaw = 0;
+  for (const f of st.facilities) {
+    const def = FACILITY[f.type];
+    if (def?.genType === 'solar' && f.enabled && f.count > 0) solarRaw += def.gen! * f.count * f.condition * flux * site.illumination * (site.body === 'titan' ? 0.3 : 1);
+  }
+  const storageNeed = site.illumination < 0.7 ? Math.min(demandTotal, solarRaw) * 24 * 7 : 0;
+  const batteryUse = storageMWh > 0 ? Math.min(1, storageNeed / storageMWh) : 0;
   for (const f of sorted) {
     const def = FACILITY[f.type];
     if (!def || !def.gen || !f.enabled || f.count <= 0) continue;
@@ -224,7 +241,7 @@ function updateSettlement(s: GameState, st: Settlement): void {
     if (def.genType === 'solar') {
       out *= flux * site.illumination;
       if (site.illumination < 0.7) {
-        const need = Math.max(1e-6, demandTotal * 24 * 7);
+        const need = Math.max(1e-6, storageNeed);
         out *= 0.55 + 0.45 * Math.min(1, storageMWh / need);
       }
       if (site.body === 'titan') out *= 0.3;
@@ -283,6 +300,7 @@ function updateSettlement(s: GameState, st: Settlement): void {
     if (j.skilled > 0) laborR *= Math.pow(skillRatio, j.skilled / j.total);
     const condR = Math.min(1, f.condition * 1.1);
     let util = Math.min(energyR, laborR, condR);
+    if (def.storageMWh) util = Math.min(util, batteryUse);
     let limiting: string | undefined = util === energyR && energyR < 0.99 ? 'Power shortage' : util === laborR && laborR < 0.99 ? 'Labor shortage' : util === condR && condR < 0.99 ? 'Poor condition' : undefined;
     let outValue = 0, inValue = 0;
     if (def.mining && f.type !== 'autoFactory') {
@@ -323,6 +341,8 @@ function updateSettlement(s: GameState, st: Settlement): void {
       // Avoid producing goods nobody needs when storage is full
       const outs = Object.keys(def.recipe.out);
       if (outs.length && outs.every((g) => overstocked(g))) {
+        // Held-back output still counts as local supply, so imports do not crowd it out
+        for (const g of outs) idle[g] = (idle[g] ?? 0) + def.recipe.out[g] * f.count * util * 0.85 * DT;
         util *= 0.15;
         limiting = 'Output not needed (storage full)';
       }
@@ -338,7 +358,8 @@ function updateSettlement(s: GameState, st: Settlement): void {
           worst = g;
         }
       }
-      const critical = def.category === 'food' || def.category === 'lifeSupport';
+      // Workshops ask for inputs too while residents go short of supplies
+      const critical = def.category === 'food' || def.category === 'lifeSupport' || f.type === 'loxPlant' || (f.type === 'fabShop' && ((st.flags.shortSupplies as number) ?? 0) > 0.02);
       for (const g in def.recipe.in) {
         const t = take(st, g, def.recipe.in[g] * scale * ratio);
         inValue += t * priceOf(g);
@@ -349,6 +370,8 @@ function updateSettlement(s: GameState, st: Settlement): void {
         const amt = def.recipe.out[g] * scale * ratio;
         put(st, g, amt);
         outValue += amt * priceOf(g);
+        // A liquefaction plant waiting on hydrogen still makes this a refuelling point to plan around
+        if (f.type === 'loxPlant' && ratio < 0.999) idle[g] = (idle[g] ?? 0) + def.recipe.out[g] * scale * (1 - ratio);
       }
       if (ratio < 0.99 && scale > 0) limiting = LIFE_RESERVED.has(worst) && (st.stock[worst] ?? 0) > 0 ? `${GOOD[worst]?.name ?? worst} reserved for residents` : `Short of ${GOOD[worst]?.name ?? worst}`;
       util *= ratio;
@@ -368,6 +391,35 @@ function updateSettlement(s: GameState, st: Settlement): void {
     // Settlement market buys outputs and sells inputs
     st.economy.treasury += inValue - outValue;
   }
+
+  // ---------------------------------------------------------------- Maintenance (critical)
+  // Spare parts go to life support, power, farms and habitats before anything else
+  const mm = 1 + (m.maintenance ?? 0);
+  const critical = (f: FacilityGroup) => CRITICAL_UPKEEP.has(FACILITY[f.type]?.category) || LIFE_PLANTS.has(f.type);
+  const maintain = (f: FacilityGroup) => {
+    const def = FACILITY[f.type];
+    if (!def || f.count <= 0) return;
+    if (!f.enabled) {
+      // Mothballed plant needs no upkeep but slowly deteriorates
+      f.condition = Math.max(0.05, f.condition - 0.001);
+      return;
+    }
+    let ratio = 1;
+    // Idle equipment wears more slowly than equipment at work
+    const wear = def.housing || def.lifeSupportCapacity ? 1 : Math.max(0.2, Math.min(1, f.utilization ?? 1));
+    for (const g in def.maintenance) {
+      const nd = def.maintenance[g] * f.count * DT * mm * wear;
+      if (nd <= 0) continue;
+      const got = takeOrWant(st, g, nd);
+      debit(s, f.owner, got * priceOf(g), 'Facility maintenance');
+      st.economy.treasury += got * priceOf(g);
+      ratio = Math.min(ratio, got / nd);
+    }
+    if (ratio >= 0.95) f.condition = Math.min(1, f.condition + (1 - f.condition) * 0.12);
+    else f.condition = Math.max(0.05, f.condition - 0.02 * (1 - ratio) - 0.001);
+    f.condition = Math.max(0.05, f.condition - 0.0004);
+  };
+  for (const f of sorted) if (critical(f)) maintain(f);
 
   // ---------------------------------------------------------------- Life support
   const lsServed = Math.min(pop, lsCap);
@@ -398,24 +450,8 @@ function updateSettlement(s: GameState, st: Settlement): void {
   st.flags.shortFood = short.food;
   st.flags.shortSupplies = short.supplies;
 
-  // ---------------------------------------------------------------- Maintenance
-  for (const f of st.facilities) {
-    const def = FACILITY[f.type];
-    if (!def || f.count <= 0) continue;
-    let ratio = 1;
-    const mm = 1 + (m.maintenance ?? 0);
-    for (const g in def.maintenance) {
-      const nd = def.maintenance[g] * f.count * DT * mm;
-      if (nd <= 0) continue;
-      const got = takeOrWant(st, g, nd);
-      debit(s, f.owner, got * priceOf(g), 'Facility maintenance');
-      st.economy.treasury += got * priceOf(g);
-      ratio = Math.min(ratio, got / nd);
-    }
-    if (ratio >= 0.995) f.condition = Math.min(1, f.condition + (1 - f.condition) * 0.12);
-    else f.condition = Math.max(0.05, f.condition - 0.02 * (1 - ratio) - 0.001);
-    f.condition = Math.max(0.05, f.condition - 0.0004);
-  }
+  // ---------------------------------------------------------------- Maintenance (everything else)
+  for (const f of sorted) if (!critical(f)) maintain(f);
 
   // ---------------------------------------------------------------- Construction
   const done: string[] = [];
@@ -466,13 +502,18 @@ function updateSettlement(s: GameState, st: Settlement): void {
     if (PROPELLANT_GOODS.has(g)) propTotal += st.stock[g];
     else total += st.stock[g];
   }
-  if (propTotal > st.propellantCap) {
-    const k = st.propellantCap / propTotal;
+  // Tanks bound what can be held, though ships docked for fuel take some straight from arriving tankers
+  let draws = 0;
+  for (const g of PROPELLANT_GOODS) draws += prevUse[g] ?? 0;
+  const propLimit = st.propellantCap + draws * 0.5;
+  if (propTotal > propLimit) {
+    const k = propLimit / propTotal;
     for (const g of PROPELLANT_GOODS) if (st.stock[g]) st.stock[g] *= k;
   }
   if (total > st.storageCap) {
-    // discard lowest-value bulk first
-    const goods = Object.keys(st.stock).filter((g) => !PROPELLANT_GOODS.has(g)).sort((a, c) => (GOOD[a]?.price ?? 0) - (GOOD[c]?.price ?? 0));
+    // Discard lowest-value bulk first, but residents' water, air, food and supplies last
+    const keep = (g: string) => (LIFE_RESERVED.has(g) || g === 'supplies' ? 1 : 0);
+    const goods = Object.keys(st.stock).filter((g) => !PROPELLANT_GOODS.has(g)).sort((a, c) => keep(a) - keep(c) || (GOOD[a]?.price ?? 0) - (GOOD[c]?.price ?? 0));
     let excess = total - st.storageCap;
     for (const g of goods) {
       if (excess <= 0) break;
@@ -570,13 +611,34 @@ function settleAccounts(s: GameState, st: Settlement, lifeValue: number): void {
   st.economy.subsidy = 0;
   st.economy.uneTransfer = 0;
   if (isGoverned(st)) {
-    // Governed settlements may run modest debts; the UNE (ETSA) cushions small colonies.
+    // Governed settlements may run modest debts; the UNE (ETSA) cushions small colonies,
+    // and the powers that founded them keep paying their share of what it costs to supply them.
     if (bal < 0 && st.status !== 'independent' && st.status !== 'associated') {
       const pop = popOf(st);
       const support = Math.min(-bal, pop * 60000 * DT + 5e7 * DT);
       debit(s, 'une', support, 'Settlement support');
       st.economy.treasury += support;
       st.economy.uneTransfer = support;
+      st.economy.subsidy = support * 12;
+      const deficit = -st.economy.treasury;
+      if (deficit > 0) {
+        let totalShare = 0;
+        for (const k in st.sponsors) totalShare += st.sponsors[k];
+        let paid = 0;
+        for (const k of Object.keys(st.sponsors).sort()) {
+          const want = deficit * (st.sponsors[k] / Math.max(1e-9, totalShare));
+          const n = s.nations[k];
+          // Sponsors pay out of their space budgets, never more than a slice of what they hold
+          const can = n ? Math.max(0, n.spaceFunds) * 0.05 : k === 'une' ? Math.max(0, s.une.treasury) * 0.01 : 0;
+          const amt = Math.min(want, can);
+          if (amt <= 0) continue;
+          debit(s, k, amt, 'Colonial support');
+          if (k === 'une') st.economy.uneTransfer += amt;
+          paid += amt;
+        }
+        st.economy.treasury += paid;
+        st.economy.subsidy += paid * 12;
+      }
     }
     st.economy.balance = st.economy.treasury;
     return;
@@ -627,6 +689,11 @@ function updatePopulation(s: GameState, st: Settlement, c: PopCtx): void {
   const pop = b.reduce((a, v) => a + v, 0);
   if (pop <= 0.5) {
     for (let i = 0; i < BAND_COUNT; i++) b[i] = 0;
+    // An emptied base with working habitats and life support asks for a new crew
+    const habitable = c.housing > 0 && st.lifeSupport.capacity > 0 && st.energy.gen >= 1;
+    st.flags.migrationDemand = habitable ? Math.min(c.housing, Math.max(8, c.jobs * 0.5)) * 0.25 : 0;
+    const region = regionOf(st);
+    if (habitable && (region === 'earthOrbit' || region === 'luna')) immigrate(st, Math.min(12, c.housing), 'terran');
     return;
   }
   // Aging (1/60 of each 5-year band per month)
@@ -703,7 +770,10 @@ function updatePopulation(s: GameState, st: Settlement, c: PopCtx): void {
   const vacancy = Math.max(0, c.jobs - c.workforce);
   const shortage = c.short.oxygen + c.short.water + c.short.food > 0.05;
   const attract = clamp(p.wellbeing * (1 - p.unemployment) * (shortage ? 0.2 : 1), 0, 1);
-  const secure = Math.min(st.lifeSupport.reserveDays.water ?? 999, st.lifeSupport.reserveDays.oxygen ?? 999, st.lifeSupport.reserveDays.food ?? 999) > 30;
+  // Newcomers only while life support, supplies and spare parts keep up
+  const rdays = st.lifeSupport.reserveDays;
+  const partsShort = (st.shortfall?.machinery ?? 0) + (st.shortfall?.supplies ?? 0) > 1 + popNow * 0.0005;
+  const secure = Math.min(rdays.water ?? 999, rdays.oxygen ?? 999, rdays.food ?? 999, rdays.supplies ?? 999) > 30 && !partsShort;
   const baseDemand = secure ? Math.min(room, vacancy * 1.25 + (st.status !== 'outpost' ? room * 0.04 : 0)) : 0;
   const migrationDemand = baseDemand * (0.4 + attract) * (1 + (m.migration ?? 0));
   st.flags.migrationDemand = migrationDemand;

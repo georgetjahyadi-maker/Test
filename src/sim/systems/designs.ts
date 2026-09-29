@@ -45,7 +45,10 @@ export function refuelPredicate(s: GameState, propType: string | null, extraOrig
 
 /** Makes more of this propellant than it uses itself (t per month). */
 export function netProducer(st: Settlement, g: string): boolean {
-  return (st.production[g] ?? 0) - (st.consumption[g] ?? 0) > 1;
+  // Output held back for want of buyers still counts: the plant can run up at once
+  const potential = (st.production[g] ?? 0) + (st.idleCapacity?.[g] ?? 0);
+  // A settlement that must import the good for its own needs is no producer
+  return potential - (st.consumption[g] ?? 0) > 1 && (st.demand[g] ?? 0) < potential * 0.5;
 }
 
 export function isRefuelPoint(st: Settlement, propType: string): boolean {
