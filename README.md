@@ -143,8 +143,9 @@ These results come from the headless autoplayer (every domain delegated, seed `h
 - The Helios swarm passes a million collectors around 2190 and reaches about 18 million
   collectors and 90 PW by 2270, where new production balances failures. The Secretariat
   redesigns its collector as technology improves.
-- A 250-year campaign runs headless in about two and a half minutes. Its save is about
-  1.8 MB of JSON, or about 340 KB gzipped.
+- A 250-year campaign runs headless in about two and a half minutes, and its save is about
+  1.8 MB of JSON (340 KB gzipped). A 500-year campaign to 2548 takes under six minutes,
+  ends with about 68 million people beyond Earth, and saves to 2.6 MB (410 KB gzipped).
 
 Known weaknesses:
 
