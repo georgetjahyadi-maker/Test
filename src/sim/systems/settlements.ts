@@ -489,7 +489,9 @@ function updateSettlement(s: GameState, st: Settlement): void {
     if (p.progress >= 0.999 || (remaining <= 1e-6 && p.progress >= 0.95)) {
       addFacility(st, p.type, p.owner, p.count, s.day);
       done.push(p.id);
-      if (def && (def.buildCost >= 1e10 || def.category === 'dyson' || p.type === 'massDriver' || p.type === 'fusionPlant' || p.type === 'semiconductorFab' || p.type === 'oneillCylinder' || p.type === 'stanfordTorus')) {
+      // The chronicle notes the first of each major facility at a settlement, not every copy
+      const first = st.facilities.filter((f) => f.type === p.type).reduce((a, f) => a + f.count, 0) <= p.count + 1e-9;
+      if (first && def && (def.buildCost >= 1e10 || def.category === 'dyson' || p.type === 'massDriver' || p.type === 'fusionPlant' || p.type === 'semiconductorFab' || p.type === 'oneillCylinder' || p.type === 'stanfordTorus')) {
         addHistory(s, `${def.name} completed at ${st.name}`, `${p.count > 1 ? p.count + ' × ' : ''}${def.name} ${p.count > 1 ? 'enter' : 'enters'} service at ${st.name}.`, 'industry', def.buildCost >= 1e11 ? 3 : 2, [st.id]);
       }
     }
@@ -640,6 +642,9 @@ function settleAccounts(s: GameState, st: Settlement, lifeValue: number): void {
         st.economy.subsidy += paid * 12;
       }
     }
+    // A local government sitting on far more than it needs spends it on its people
+    const cap = Math.max(1e9, st.economy.gdp * 2);
+    if (st.economy.treasury > cap) st.economy.treasury -= (st.economy.treasury - cap) * 0.1;
     st.economy.balance = st.economy.treasury;
     return;
   }

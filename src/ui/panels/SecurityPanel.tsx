@@ -25,7 +25,7 @@ export function SecurityPanel() {
         <Stat label="Kessler risk" value={fmtPct(s.earth.debrisRisk, 1)} explain="earth.debris" color={s.earth.debrisRisk > 0.4 ? 'var(--c-bad)' : undefined} />
         <Stat label="Orbital object index" value={s.earth.orbitalObjects.toFixed(2)} sub="1.00 = 2048" />
         <Stat label="Global tension" value={fmtPct(sec.tension, 0)} color={sec.tension > 0.6 ? 'var(--c-bad)' : undefined} />
-        <Stat label="AI risk" value={fmtPct(sec.aiRisk, 0)} color={sec.aiRisk > 0.6 ? 'var(--c-bad)' : sec.aiRisk > 0.35 ? 'var(--c-warn)' : undefined} />
+        <Stat label="AI risk" value={fmtPct(sec.aiRisk, 0)} explain="security.aiRisk" color={sec.aiRisk > 0.6 ? 'var(--c-bad)' : sec.aiRisk > 0.35 ? 'var(--c-warn)' : undefined} />
         <Stat label="UNE security forces" value={fmtNum(sec.forcesCombat)} sub="combat rating" />
         <Stat label="Piracy incidents (12 mo)" value={fmtNum(sec.incidentsYear)} />
         <Stat label="Planetary defense" value={s.une.competencies.planetaryDefense ?? 'national'} sub="UNE competency" />

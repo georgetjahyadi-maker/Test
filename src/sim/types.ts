@@ -677,6 +677,7 @@ export interface Route {
   contract?: { payer: ActorId; ratePerTonne: number };
   /** Distribution leg from a transfer hub: unmet needs are forwarded to the origin as demand. */
   transship?: boolean;
+  lastLossLogged?: number; // day the chronicle last recorded a ship lost on this route
   /** Consecutive months a local route's origin has not produced its ships' propellant. */
   badMonths?: number;
 }

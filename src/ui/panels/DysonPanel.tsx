@@ -44,7 +44,7 @@ export function DysonPanel() {
         <Stat label="Collectors" value={fmtSci(sw.totalCollectors)} />
         <Stat label="Electrical output" value={fmtPower(sw.totalPowerW)} explain="swarm.power" />
         <Stat label="Share of solar output" value={frac > 0 ? fmtSci(frac) : '0'} sub="electrical / 3.83×10²⁶ W" />
-        <Stat label="Sunlight intercepted" value={capture > 0 ? fmtPct(capture, capture < 0.001 ? 5 : 3) : '0%'} />
+        <Stat label="Sunlight intercepted" value={capture <= 0 ? '0%' : capture < 1e-5 ? `${fmtSci(capture * 100)}%` : fmtPct(capture, capture < 0.001 ? 5 : 3)} />
         <Stat label="Beamed to Earth" value={`${s.earth.beamedTW.toFixed(2)} TW`} sub={`Earth uses ${s.earth.energyDemandTW.toFixed(0)} TW`} />
         <Stat label="Computing" value={fmtPower(sw.computeW)} />
         <Stat label="Built (12 mo)" value={fmtSci(sw.builtYear)} />

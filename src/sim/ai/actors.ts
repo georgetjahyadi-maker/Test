@@ -6,7 +6,7 @@ import { clamp } from '../core/util';
 import { rand, chance, gaussian, pick } from '../core/rng';
 import { mod } from '../systems/modifiers';
 import { popOf, settlementList, regionOf, isGoverned, isIndependent, addHistory, known } from '../systems/helpers';
-import { suggestFacilities, estimateROI, canBuild, totalCost, industrialSuggestion, inputsAvailable } from './planner';
+import { suggestFacilities, estimateROI, canBuild, totalCost, industrialSuggestion, inputsAvailable, aiFrontierOpen } from './planner';
 import { invest, ensureSupply } from './actions';
 import { foundingPlan, foundSettlement } from '../systems/colonies';
 import { makeCharacter } from '../systems/characters';
@@ -71,6 +71,7 @@ function pickExpansionSite(s: GameState, actor: string): string | undefined {
   const order = ['luna_procellarum', 'luna_tranquillitatis', 'luna_daedalus', 'eml1', 'eml5', 'nea_ryugu', 'nea_bennu', 'phobos', 'mars_orbit', 'mars_arcadia', 'mars_jezero', 'mars_hellas', 'mars_nili', 'mars_arsia', 'ceres', 'ceres_orbit', 'vesta', 'psyche', 'nea_amun', 'venus_clouds', 'mercury_prokofiev', 'mercury_caloris', 'callisto', 'titan', 'ganymede', 'saturn_orbit', 'uranus_orbit', 'enceladus', 'europa', 'triton', 'pluto'];
   for (const id of order) {
     if (taken.has(id)) continue;
+    if (!aiFrontierOpen(s, id)) continue;
     const plan = foundingPlan(s, id, actor);
     if (plan.ok) return id;
   }
@@ -165,6 +166,7 @@ function pickResourceSite(s: GameState, actor: string): string | undefined {
   const cands = SITES.filter((x) => !taken.has(x.id) && x.deposits.length > 0 && x.region !== 'earthOrbit');
   cands.sort((a, b) => a.id.localeCompare(b.id));
   for (const site of cands) {
+    if (!aiFrontierOpen(s, site.id)) continue;
     const plan = foundingPlan(s, site.id, actor);
     if (plan.ok) return site.id;
   }
@@ -182,11 +184,17 @@ export function localGovernmentsMonthly(s: GameState): void {
     if (room < 1e8) continue;
     if (st.construction.length > 4 + popOf(st) / 20000) continue;
     const sug = suggestFacilities(s, st, st.id);
-    for (const sg of sug.slice(0, 2)) {
+    // Larger settlements run several projects a month
+    let slots = Math.min(6, 1 + Math.floor(popOf(st) / 200000));
+    let budget = room * 0.5;
+    for (const sg of sug.slice(0, 2 + slots)) {
+      if (slots <= 0) break;
       const cost = totalCost(s, st, sg.type, sg.count);
-      if (cost > room * 0.5) continue;
-      invest(s, st.id, st, sg.type, sg.count);
-      break;
+      if (cost > budget) continue;
+      if (invest(s, st.id, st, sg.type, sg.count).ok) {
+        slots--;
+        budget -= cost;
+      }
     }
     if (isIndependent(st) && st.economy.treasury > 5e9) ensureSupply(s, st, st.id, st.economy.treasury * 0.2);
   }

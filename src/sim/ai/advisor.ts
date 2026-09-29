@@ -10,11 +10,18 @@ import { annualRevenue } from '../systems/politics';
 import { scaleFor } from '../systems/une';
 import { availableTechs } from '../systems/research';
 import { lawAvailable, proposeBill, projectVote, lobby, pledge } from '../systems/legislature';
-import { suggestFacilities, totalCost } from './planner';
+import { suggestFacilities, totalCost, aiFrontierOpen } from './planner';
 import { invest, ensureSupply } from './actions';
 import { foundingPlan, foundSettlement, grantStatus, statusRequirements } from '../systems/colonies';
 import { currentEra } from '../systems/milestones';
 import { civilFromDay } from '../core/time';
+import { GRAND_PROJECT } from '../content/misc';
+import { projectAvailability, startGrandProject } from '../systems/projects';
+import { collectorStats } from '../systems/dyson';
+import { CELL_TYPES, COLLECTOR_STRUCTURES, TRANSMISSION, REPAIR } from '../physics/dysonCalc';
+import type { CollectorDesign } from '../types';
+import { nextId } from '../core/util';
+import { addHistory } from '../systems/helpers';
 
 export function advisorMonthly(s: GameState): void {
   const d = s.une.delegation;
@@ -23,6 +30,10 @@ export function advisorMonthly(s: GameState): void {
   if (d.logistics) logisticsAdvisor(s);
   if (d.construction) constructionAdvisor(s);
   const month = civilFromDay(s.day).m;
+  if (d.construction && month === 3) {
+    grandProjectAdvisor(s);
+    collectorAdvisor(s);
+  }
   if (d.expansion && month % 6 === 1) expansionAdvisor(s);
   if (d.legislation && month % 2 === 0) legislationAdvisor(s);
 }
@@ -142,6 +153,90 @@ export function constructionAdvisor(s: GameState): void {
   }
 }
 
+/** Grand projects worth starting, in order, with the condition that makes each one pay. */
+const PROJECT_PRIORITY: { id: string; when: (s: GameState) => boolean }[] = [
+  { id: 'pd_array', when: (s) => s.security.threats.length > 0 || s.day > 365 * 40 },
+  { id: 'lunar_mass_driver_network', when: (s) => settlementList(s).some((st) => SITE[st.siteId].body === 'moon' && st.flags.collectorLimit === 'launch') || settlementList(s).filter((st) => SITE[st.siteId].body === 'moon').reduce((a, st) => a + popOf(st), 0) > 2e5 },
+  { id: 'launch_loop', when: (s) => s.earth.launchDemandMonth > (s.earth.launchCapacity / 12) * 0.8 },
+  { id: 'mercury_mass_driver_network', when: (s) => settlementList(s).some((st) => SITE[st.siteId].body === 'mercury' && st.facilities.some((f) => f.type === 'autoFactory' || f.type === 'collectorFactory')) },
+  { id: 'sgl_telescope', when: () => true },
+  { id: 'mars_shield', when: (s) => settlementList(s).filter((st) => SITE[st.siteId].body === 'mars').reduce((a, st) => a + popOf(st), 0) > 20000 },
+  { id: 'orbital_ring', when: (s) => s.earth.launchDemandMonth > (s.earth.launchCapacity / 12) * 0.8 },
+  { id: 'mars_elevator', when: (s) => settlementList(s).filter((st) => SITE[st.siteId].body === 'mars').reduce((a, st) => a + popOf(st), 0) > 100000 },
+  { id: 'interstellar_probe', when: (s) => s.swarm.totalPowerW > 1e15 },
+  { id: 'venus_sunshade', when: (s) => settlementList(s).some((st) => SITE[st.siteId].body === 'venus' && popOf(st) > 1000) },
+];
+
+/** Start one grand project a year when the federal budget can carry it comfortably. */
+export function grandProjectAdvisor(s: GameState): void {
+  const R = annualRevenue(s);
+  const f = fiscal(s);
+  if (f.surplus < R * 0.05 || s.une.debt > R * 0.25) return;
+  if (s.grandProjects.some((g) => g.completedDay === undefined)) return;
+  for (const p of PROJECT_PRIORITY) {
+    const def = GRAND_PROJECT[p.id];
+    if (!def || !p.when(s)) continue;
+    if (def.cost > s.une.treasury * 0.8 || def.cost / Math.max(1, def.months / 12) > f.surplus * 0.8) continue;
+    // Body-bound projects go to the largest settlement there
+    let where: string | undefined;
+    if (def.bodies) {
+      const host = settlementList(s).filter((st) => def.bodies!.includes(SITE[st.siteId].body)).sort((a, b) => popOf(b) - popOf(a))[0];
+      if (!host) continue;
+      where = host.id;
+    }
+    if (!projectAvailability(s, p.id, where).ok) continue;
+    if (startGrandProject(s, p.id, where).ok) return;
+  }
+}
+
+/**
+ * Keep the Secretariat's collector design current: every few years, try the combinations
+ * the known technologies allow and adopt one that delivers clearly more energy over its
+ * life per tonne of material. Player-made designs are left alone.
+ */
+export function collectorAdvisor(s: GameState): void {
+  const sw = s.swarm;
+  const cur = sw.activeDesign ? sw.designs[sw.activeDesign] : undefined;
+  if (!cur || cur.owner !== 'une' || !/^Helios-/.test(cur.name)) return;
+  if (s.day - cur.created < 365 * 5) return;
+  const knownTech = (id: string) => !!s.tech[id]?.known;
+  const score = (d: CollectorDesign) => {
+    const cs = collectorStats(s, d);
+    if (cs.errors.length || cs.techMissing.length) return 0;
+    return ((cs.transmitted + cs.compute) * cs.lifetime) / Math.max(1, cs.mass);
+  };
+  let best = cur, bestScore = score(cur);
+  for (const cell of Object.keys(CELL_TYPES)) {
+    if (CELL_TYPES[cell].tech && !knownTech(CELL_TYPES[cell].tech!)) continue;
+    for (const structure of Object.keys(COLLECTOR_STRUCTURES)) {
+      if (COLLECTOR_STRUCTURES[structure].tech && !knownTech(COLLECTOR_STRUCTURES[structure].tech!)) continue;
+      for (const transmission of ['microwave', 'laser']) {
+        if (TRANSMISSION[transmission].tech && !knownTech(TRANSMISSION[transmission].tech!)) continue;
+        for (const repair of Object.keys(REPAIR)) {
+          if (REPAIR[repair].tech && !knownTech(REPAIR[repair].tech!)) continue;
+          for (const radiusAU of [0.3, 0.5, 0.7]) {
+            for (const radiatorRatio of [0.5, 1.5]) {
+              const d: CollectorDesign = { ...cur, cell, structure, transmission, repair, radiusAU, radiatorRatio, stationKeeping: 'sail' };
+              const sc = score(d);
+              if (sc > bestScore) {
+                best = d;
+                bestScore = sc;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  if (best === cur || bestScore < score(cur) * 1.15) return;
+  const n = Object.values(sw.designs).filter((d) => d.owner === 'une' && /^Helios-/.test(d.name)).length + 1;
+  const numeral = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'][n - 1] ?? String(n);
+  const d: CollectorDesign = { ...best, id: nextId(s, 'col'), name: `Helios-${numeral}`, created: s.day };
+  sw.designs[d.id] = d;
+  sw.activeDesign = d.id;
+  addHistory(s, `${d.name} collector adopted`, `The Secretariat moves Helios production to the ${d.name}: ${CELL_TYPES[d.cell].name.toLowerCase()} on ${COLLECTOR_STRUCTURES[d.structure].name.toLowerCase()} at ${d.radiusAU} AU, beaming by ${TRANSMISSION[d.transmission].name.toLowerCase()}.`, 'dyson', 2);
+}
+
 const EXPANSION_ORDER = [
   'luna_tranquillitatis', 'eml1', 'luna_procellarum', 'nea_ryugu', 'mars_orbit', 'mars_arcadia', 'phobos', 'eml5', 'luna_daedalus', 'mars_jezero', 'ceres', 'nea_amun', 'mercury_prokofiev', 'mercury_caloris', 'vesta', 'psyche', 'venus_clouds', 'callisto', 'titan', 'mercury_orbit', 'ceres_orbit', 'saturn_orbit', 'uranus_orbit', 'ganymede', 'mars_hellas', 'mars_nili', 'triton', 'pluto',
 ];
@@ -152,13 +247,24 @@ export function expansionAdvisor(s: GameState): void {
   // Only expand what the budget can keep alive
   const f = fiscal(s);
   if (f.surplus < R * 0.05 || s.une.debt > R * 0.25) return;
+  // One new UNE settlement at a time, and none while an existing one is struggling
+  const last = (s.events.flags.lastUneFounding as number) ?? -Infinity;
+  if (s.day - last < 365 * 3) return;
+  const mine = settlementList(s).filter((st) => st.founder === 'une' && popOf(st) >= 50);
+  const inTrouble = mine.filter((st) => {
+    const rd = st.lifeSupport.reserveDays;
+    return Math.min(rd.water ?? 999, rd.oxygen ?? 999, rd.food ?? 999) < 20 || st.energy.ratio < 0.7 || st.pop.wellbeing < 0.4;
+  });
+  if (mine.length > 0 && inTrouble.length * 2 > mine.length) return;
   const taken = new Set(settlementList(s).map((st) => st.siteId));
   for (const site of EXPANSION_ORDER) {
     if (taken.has(site)) continue;
+    if (!aiFrontierOpen(s, site)) continue;
     const plan = foundingPlan(s, site, 'une');
     if (!plan.ok) continue;
     if (plan.cost + plan.transport > s.une.treasury * 0.4) continue;
     foundSettlement(s, site, 'une');
+    s.events.flags.lastUneFounding = s.day;
     return;
   }
 }
@@ -257,8 +363,17 @@ export function legislationAdvisor(s: GameState): void {
   if (s.bills.filter((b) => b.stage !== 'done').length >= 2) return;
   const failed = (s.events.flags.failedLaws ??= {}) as Record<string, number>;
   for (const b of s.bills) if (b.result === 'failed' || b.result === 'rejected') failed[b.lawId] = Math.max(failed[b.lawId] ?? 0, b.voteDay);
+  // Within a group of alternative laws, never step back from the one listed later
+  const rank = new Map(LAW_PRIORITY.map((x, i) => [x.id, i]));
+  const inForceRank = (group: string) => {
+    let r = -1;
+    for (const id in s.laws) if (LAW[id]?.group === group) r = Math.max(r, rank.get(id) ?? -1);
+    return r;
+  };
   for (const item of LAW_PRIORITY) {
     if (s.laws[item.id]) continue;
+    const group = LAW[item.id]?.group;
+    if (group && inForceRank(group) > (rank.get(item.id) ?? 0)) continue;
     if (failed[item.id] && s.day - failed[item.id] < 365 * 4) continue;
     if (!item.when(s)) continue;
     if (COSTLY_LAWS.has(item.id) && fiscal(s).surplus < annualRevenue(s) * 0.1) continue;

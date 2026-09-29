@@ -230,6 +230,11 @@ export function computeNeeds(s: GameState): void {
       if (so.shipyard !== st.id) continue;
       for (const g in so.materials) constr[g] = (constr[g] ?? 0) + Math.max(0, so.materials[g]);
     }
+    // Grand projects hosted here draw their materials from local stock too
+    for (const gp of s.grandProjects) {
+      if (gp.completedDay !== undefined || gp.settlementId !== st.id) continue;
+      for (const g in gp.materials) constr[g] = (constr[g] ?? 0) + Math.min(Math.max(0, gp.materials[g]), (gp.materialsTotal[g] ?? 0) * 0.25);
+    }
     const goods = new Set([...Object.keys(cons), ...Object.keys(st.production), ...Object.keys(st.stock), ...Object.keys(constr)]);
     const fwd = st.forward ?? {};
     for (const g in fwd) goods.add(g);
@@ -543,7 +548,12 @@ function runRoute(s: GameState, r: Route): void {
       shipPax = Math.max(0, shipPax * (1 - frac));
       s.events.flags.lastAccident = { route: r.id, day: s.day, crew: crewLost, design: design.name };
       addAlert(s, 'warn', `${design.name} lost on ${r.name}${crewLost > 0 ? ` with ${crewLost} aboard` : ''}`, r.id);
-      if (crewLost > 0) addHistory(s, `Spacecraft lost on ${r.name}`, `A ${design.name} operated by ${actorName(s, r.owner)} was destroyed in flight. ${crewLost} people died.`, 'disaster', 2, [r.id]);
+      // The chronicle records a loss on a busy lane only now and then, or when many die
+      const lastLogged = r.lastLossLogged;
+      if (crewLost > 0 && (crewLost >= 20 || lastLogged === undefined || s.day - lastLogged > 365 * 5)) {
+        addHistory(s, `Spacecraft lost on ${r.name}`, `A ${design.name} operated by ${actorName(s, r.owner)} was destroyed in flight. ${crewLost} people died.`, 'disaster', 2, [r.id]);
+        r.lastLossLogged = s.day;
+      }
     }
   }
   if (launched.fees > 0) distributeLaunchRevenue(s, launched.fees);

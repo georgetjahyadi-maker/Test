@@ -128,6 +128,9 @@ function replicate(s: GameState): void {
     if ((m.automationMax ?? 1) < 5.5) continue;
     const limit = st.flags.collectorLimit as string | undefined;
     if (glut || (limit ? limit === 'launch' || limit === 'none' : count >= 20)) continue;
+    // No copies that the local deposits could not keep busy for a few decades
+    const reserveYears = deposits.reduce((a, d) => a + d.reserve, 0) / Math.max(1, def.mining!.orePerYear * count);
+    if (reserveYears < 30) continue;
     const rate = (repPolicy >= 1 ? 0.5 : 0.25) / 12;
     const desired = count * rate;
     const bm = def.buildMass;
@@ -153,6 +156,8 @@ function produceCollectors(s: GameState): void {
   const cs = collectorStats(s, design);
   if (cs.errors.length > 0 || cs.techMissing.length > 0) return;
   const massDriverNet = s.grandProjects.some((g) => g.defId === 'mercury_mass_driver_network' && g.completedDay !== undefined);
+  // The Lunar Export Network links every lunar settlement to cislunar space
+  const lunarNet = s.grandProjects.some((g) => g.defId === 'lunar_mass_driver_network' && g.completedDay !== undefined);
   let built = 0;
   for (const st of settlementList(s)) {
     st.flags.collectorLimit = 'none';
@@ -175,7 +180,9 @@ function produceCollectors(s: GameState): void {
     }
     // Launch constraint from surfaces
     if (SITE[st.siteId].kind === 'surface') {
-      const launchT = massDriverNet ? Infinity : st.massDriverCapacity / 12;
+      const body = SITE[st.siteId].body;
+      const networked = (massDriverNet && body === 'mercury') || (lunarNet && body === 'moon');
+      const launchT = networked ? Infinity : st.massDriverCapacity / 12;
       if (launchT / cs.mass < n) {
         n = launchT / cs.mass;
         limit = 'launch';

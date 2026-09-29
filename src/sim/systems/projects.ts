@@ -35,10 +35,6 @@ export function grandProjectsMonthly(s: GameState): void {
     const def = GRAND_PROJECT[gp.defId];
     if (!def) continue;
     const perMonth = 1 / def.months;
-    // Money tranche
-    const tranche = def.cost * perMonth;
-    debit(s, 'une', tranche, 'Grand projects');
-    gp.paid += tranche;
     let ratio = 1;
     const st = gp.settlementId ? s.settlements[gp.settlementId] : undefined;
     if (st) {
@@ -57,6 +53,10 @@ export function grandProjectsMonthly(s: GameState): void {
       }
       gp.stalled = ratio < 0.99 ? 'Waiting for materials' : undefined;
     }
+    // Money is paid as work actually advances
+    const tranche = Math.min(def.cost * perMonth * ratio, Math.max(0, def.cost - gp.paid));
+    debit(s, 'une', tranche, 'Grand projects');
+    gp.paid += tranche;
     gp.progress = Math.min(1, gp.progress + perMonth * ratio);
     if (gp.progress >= 0.999) {
       gp.completedDay = s.day;

@@ -120,32 +120,44 @@ These results come from the headless autoplayer (every domain delegated, seed `h
 | Milestone | Year | Plan target |
 |---|---|---|
 | UNE Lunar Base | 2048 | |
-| Cislunar Propellant Economy | 2051 | |
-| Permanent Lunar Civilization | 2066 | 2058–2070 |
-| Humans on Mars | 2081 | 2080–2110 |
-| First Asteroid Mine | 2082 | |
-| Beyond the Snow Line | 2085 | |
-| First Light (first Helios collector) | 2151 | |
-| Autonomous Industrial Civilization | 2164 | |
-| One Million Beyond Earth | 2177 | |
+| Cislunar Propellant Economy | 2050 | |
+| Permanent Lunar Civilization | 2065 | 2058–2070 |
+| First Asteroid Mine | 2079 | |
+| Humans on Mars | 2084 | 2080–2110 |
+| Beyond the Snow Line | 2110 | |
+| First Light (first Helios collector) | 2148 | |
+| Autonomous Industrial Civilization | 2163 | |
+| One Million Beyond Earth | 2175 | |
+| Million Dyson Collectors | 2190 | |
 
-- The off-world population grows every decade: about 50,000 by 2087, 280,000 by 2107,
-  1.3 million by 2187 and 4.7 million by 2297. There are no system-wide collapses, and
-  UNE and colonial finances stay bounded.
-- A 250-year campaign runs headless in under two and a half minutes. Its save is about
+- Seeds `alpha`, `beta` and `gamma` put Permanent Lunar Civilization in 2066–2067 and
+  Humans on Mars in 2080–2090. They pass a million people beyond Earth between 2145 and
+  2185.
+- The off-world population grows every decade: about 40,000 by 2087, 220,000 by 2107,
+  1.2 million by 2187 and 15 million by 2297. There are no system-wide collapses, and UNE
+  and colonial finances stay bounded.
+- The Secretariat completes six grand projects by 2240: the planetary defense array,
+  the Lunar Export Network, a launch loop, the solar gravitational lens telescope, an
+  orbital ring and an interstellar probe. Launch prices fall from 150,000 to about 5,000
+  credits a tonne.
+- The Helios swarm passes a million collectors around 2190 and reaches about 18 million
+  collectors and 90 PW by 2270, where new production balances failures. The Secretariat
+  redesigns its collector as technology improves.
+- A 250-year campaign runs headless in about two and a half minutes. Its save is about
   1.8 MB of JSON, or about 340 KB gzipped.
 
 Known weaknesses:
 
 - Most people end up in cislunar space. Mars, the belt and the outer system grow slowly
-  because interplanetary freight costs 0.5–2 million credits a tonne until fusion drives
-  replace older fleets.
-- Equatorial lunar bases can still go through power or supply crises.
-- The Helios swarm grows into the tens of terawatts but not towards a meaningful share of
-  the Sun within 250 years. Collector output is limited by launch capacity and
-  fabrication on the lunar surface, and Mercury industry rarely develops.
+  because interplanetary freight costs 0.3–1 million credits a tonne. Many far outposts
+  stay small or empty.
+- Equatorial lunar bases such as Tranquility and Procellarum go through recurring power
+  and supply crises and have poor wellbeing late in the game.
+- The swarm captures only about 10⁻¹⁰ of the Sun's output by 2300. Collector output is
+  limited by lunar launch capacity and by electronics, and Mercury industry rarely
+  develops.
 - Off-world GDP swings with the regional price regime. Goods that are dear while imported
   become nearly free once a region makes a surplus.
-- In a hands-off game where the player delegates only the default domains, growth is much
+- In a hands-off game, where the player keeps only the default delegation, growth is much
   slower than for the autoplayer. That is intended: the player is expected to found
   settlements and pass laws.
