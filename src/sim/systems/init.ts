@@ -57,7 +57,7 @@ export function createGame(seed: string): GameState {
       expenseYTD: {},
       revenueLastYear: {},
       expenseLastYear: {},
-      delegation: { logistics: true, budget: true, research: false, construction: false, expansion: false, legislation: false, events: false },
+      delegation: { logistics: true, budget: true, research: true, construction: true, expansion: false, legislation: false, events: false },
       bondsAuthorized: false,
       citizenship: 'national',
       fragmentation: 0,
@@ -198,7 +198,9 @@ export function createGame(seed: string): GameState {
   addFacility(leo, 'orbitalStation', 'une', 1, 0);
   addFacility(leo, 'orbitalStation', 'usa', 1, 0);
   addFacility(leo, 'lifeSupport', 'une', 2, 0);
-  addFacility(leo, 'solarArray', 'argent', 5, 0);
+  addFacility(leo, 'solarArray', 'argent', 8, 0);
+  addFacility(leo, 'solarArray', 'une', 4, 0);
+  addFacility(leo, 'batteryBank', 'une', 2, 0);
   addFacility(leo, 'propellantDepot', 'argent', 1, 0);
   addFacility(leo, 'propellantDepot', 'une', 1, 0);
   addFacility(leo, 'warehouse', 'une', 1, 0);
@@ -210,7 +212,7 @@ export function createGame(seed: string): GameState {
   addAdults(gw.pop, 6);
   addFacility(gw, 'orbitalStation', 'une', 1, 0);
   addFacility(gw, 'lifeSupport', 'une', 1, 0);
-  addFacility(gw, 'solarArray', 'une', 1, 0);
+  addFacility(gw, 'solarArray', 'une', 2, 0);
   addFacility(gw, 'propellantDepot', 'une', 1, 0);
   gw.stock = { oxygen: 4, water: 25, food: 4, supplies: 3, propellant: 2500 };
 

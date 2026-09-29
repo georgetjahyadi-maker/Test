@@ -71,6 +71,19 @@ export function uneMonthly(s: GameState): void {
       if (s.day % 30 < 1) addAlert(s, 'crit', 'UNE treasury overdrawn: agencies are losing effectiveness');
     }
   }
+  // --------------------------------------------------------------- Surplus rebate
+  // A treasury far beyond any plausible need goes back to the member states that paid it in
+  const reserveTarget = Math.max(5e10, revenue * 1.5);
+  if (u.treasury > reserveTarget && u.debt <= 0 && assessments > 0) {
+    const rebate = (u.treasury - reserveTarget) * 0.1;
+    debit(s, 'une', rebate, 'Assessment rebates');
+    for (const id of Object.keys(s.nations).sort()) {
+      const n = s.nations[id];
+      if (!n.member) continue;
+      const share = (n.gdp * (m.assessmentRate ?? 0.0004) * (0.65 + 0.35 * n.compliance)) / assessments;
+      credit(s, id, rebate * share, 'Assessment rebate');
+    }
+  }
   // --------------------------------------------------------------- Rating
   const legit = u.metrics.legitimacy ?? 0.6;
   const rating = clamp(0.95 - (u.debt / Math.max(1, revenue)) * 0.08 - (1 - legit) * 0.35 - (u.treasury < 0 ? 0.15 : 0) - u.fragmentation * 0.2, 0.05, 0.98);

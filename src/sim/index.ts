@@ -2,8 +2,10 @@
 import { createGame as createBase } from './systems/init';
 import { monthlyTick, stepDay } from './step';
 import type { GameState } from './types';
+import { resetLogisticsRuntime } from './systems/logistics';
 
 export function createGame(seed: string): GameState {
+  resetLogisticsRuntime();
   const s = createBase(seed);
   // Process January 2048 immediately so every metric is populated.
   monthlyTick(s, 1);

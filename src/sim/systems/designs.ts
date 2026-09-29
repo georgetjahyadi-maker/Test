@@ -5,10 +5,17 @@ import { mod } from './modifiers';
 
 const statsCache = new Map<string, { key: string; stats: DesignStats }>();
 
-function techKey(s: GameState): number {
+const techMemo = new WeakMap<GameState, { n: number; key: string }>();
+
+/** Fingerprint of the known technologies (knowledge only grows, so the count detects change). */
+function techKey(s: GameState): string {
   let n = 0;
   for (const id in s.tech) if (s.tech[id].known) n++;
-  return n;
+  const m = techMemo.get(s);
+  if (m && m.n === n) return m.key;
+  const key = Object.keys(s.tech).filter((id) => s.tech[id].known).sort().join(',');
+  techMemo.set(s, { n, key });
+  return key;
 }
 
 export function designStats(s: GameState, d: VehicleDesign): DesignStats {

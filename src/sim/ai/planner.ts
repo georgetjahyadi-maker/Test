@@ -232,6 +232,8 @@ export function suggestFacilities(s: GameState, st: Settlement, actor: string): 
   if (ind) out.push(ind);
   if (pop > 2000 && canBuild(s, st, actor, 'shipyard') && facilityCount(st, 'shipyard') + pendingCount(st, 'shipyard') === 0 && st.closure > 0.4) out.push({ type: 'shipyard', count: 1, reason: 'Local shipbuilding', priority: 3 });
   if (canBuild(s, st, actor, 'massDriver') && facilityCount(st, 'massDriver') + pendingCount(st, 'massDriver') === 0 && totalExportsYear(st) > 20000) out.push({ type: 'massDriver', count: 1, reason: 'Bulk exports', priority: 4 });
+  // Collector factories on a surface are held back by how much they can throw into orbit
+  else if (st.flags.collectorLimit === 'launch' && canBuild(s, st, actor, 'massDriver') && pendingCount(st, 'massDriver') === 0) out.push({ type: 'massDriver', count: 1, reason: 'Launching collectors', priority: 6 });
   // Fusion plants short of fuel need a deuterium plant (water feedstock) before anything else
   if (facilityCount(st, 'fusionPlant') > 0 && (st.shortfall?.fusionFuel ?? 0) > 0 && pendingCount(st, 'deuteriumPlant') === 0 && canBuild(s, st, actor, 'deuteriumPlant')) {
     out.push({ type: 'deuteriumPlant', count: Math.max(1, Math.ceil(facilityCount(st, 'fusionPlant') * 2.25)), reason: 'Fusion fuel', priority: 9 });

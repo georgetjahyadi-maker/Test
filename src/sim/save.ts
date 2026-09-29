@@ -2,6 +2,7 @@
 import type { GameState } from './types';
 import { SAVE_VERSION } from './systems/init';
 import { invalidateModifiers } from './systems/modifiers';
+import { resetLogisticsRuntime } from './systems/logistics';
 
 export function serialize(s: GameState): string {
   return JSON.stringify(s);
@@ -25,6 +26,7 @@ export function deserialize(json: string): GameState {
   }
   if (v > SAVE_VERSION) throw new Error(`Save is from a newer version (${v}).`);
   invalidateModifiers();
+  resetLogisticsRuntime();
   return raw as GameState;
 }
 

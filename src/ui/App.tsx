@@ -363,8 +363,8 @@ function TopBar() {
   const crit = s.alerts.filter((a) => a.severity === 'crit' && s.day - a.day < 60).length;
   const pending = s.events.pending.length;
   const c = civilFromDay(s.day);
-  const item = (k: string, v: React.ReactNode, key?: string, title?: string) => (
-    <div className="tb-item" onClick={key ? (e) => openExplain(key, title ?? k, e) : undefined}>
+  const item = (k: string, v: React.ReactNode, key?: string, title?: string, optional = false) => (
+    <div className={optional ? 'tb-item tb-opt' : 'tb-item'} onClick={key ? (e) => openExplain(key, title ?? k, e) : undefined}>
       <div className="k">{k}</div>
       <div className="v">{v}</div>
     </div>
@@ -382,11 +382,11 @@ function TopBar() {
       {item('Treasury', <span style={{ color: s.une.treasury < 0 ? 'var(--c-bad)' : undefined }}>{fmtMoney(s.une.treasury)}</span>, 'une.revenue', 'UNE revenue this year')}
       {item('Legitimacy', fmtPct(s.une.metrics.legitimacy ?? 0, 0), 'une.legitimacy', 'Federal legitimacy')}
       {item('Pol. capital', Math.floor(s.une.politicalCapital))}
-      {item('Population', fmtNum(pop), 'top.population', 'Population')}
+      {item('Population', fmtNum(pop), 'top.population', 'Population', true)}
       {item('Off-world', fmtNum(off), 'top.population', 'Population')}
-      {item('Energy', fmtPower(power), 'top.energy', 'Energy')}
+      {item('Energy', fmtPower(power), 'top.energy', 'Energy', true)}
       {item('Research', `${fmtNum(s.research.rpLastYear)} RP/yr`, 'research.rate', 'Research output')}
-      {item('Industry', `${fmtNum(industry)} t/yr`, 'top.industry', 'Off-world industrial output')}
+      {item('Industry', `${fmtNum(industry)} t/yr`, 'top.industry', 'Off-world industrial output', true)}
       <div className="tb-spacer" />
       {pending > 0 && (
         <div className="tb-item alerts-btn" onClick={() => document.dispatchEvent(new CustomEvent('helios:open-events'))}>
@@ -409,7 +409,7 @@ function TopBar() {
         ))}
         <span className="tiny muted" style={{ marginLeft: 6, width: 46 }}>{running ? '▶ run' : '■ paused'}</span>
       </div>
-      <span className="tiny muted" style={{ alignSelf: 'center', padding: '0 8px' }}>{c.y}</span>
+      <span className="tiny muted tb-year" style={{ alignSelf: 'center', padding: '0 8px' }}>{c.y}</span>
     </div>
   );
 }

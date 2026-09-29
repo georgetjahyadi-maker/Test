@@ -129,6 +129,13 @@ interface RouteRuntime {
 
 export const routeRuntime = new Map<string, RouteRuntime>();
 
+/** Forget per-run caches when a different campaign is created or loaded in this process. */
+export function resetLogisticsRuntime(): void {
+  routeRuntime.clear();
+  urgentNeed.clear();
+  portUsed.clear();
+}
+
 export function logisticsMonthly(s: GameState): void {
   s.earth.launchUsedMonth = 0;
   s.earth.launchDemandMonth = 0;
