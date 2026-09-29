@@ -491,7 +491,9 @@ export interface Settlement {
   demand: Stock; // outstanding needs for logistics
   surplus: Stock;
   inTransit: Stock;
-  routeDraw: Stock; // propellant drawn by visiting ships last month
+  routeDraw: Stock; // propellant requested by visiting ships last month
+  forward?: Stock; // goods that distribution legs departing here could not fill last month
+  shortfall?: Stock; // fuel, spare parts and life-critical inputs facilities needed but lacked last month
   closure: number;
   automation: number;
   science: number;
@@ -553,6 +555,8 @@ export interface Nation {
   spaceFunds: number;
   relations: Record<string, number>;
   factionSupport: Record<string, number>;
+  /** Long-run partisan alignment that support reverts toward (realigns slowly). */
+  factionBase?: Record<string, number>;
   leaderId: string;
   nextLeadershipDay: number;
   leadershipCycle: number;
@@ -670,6 +674,10 @@ export interface Route {
   created: number;
   stats: RouteStats;
   contract?: { payer: ActorId; ratePerTonne: number };
+  /** Distribution leg from a transfer hub: unmet needs are forwarded to the origin as demand. */
+  transship?: boolean;
+  /** Consecutive months a local route's origin has not produced its ships' propellant. */
+  badMonths?: number;
 }
 
 export interface Shipment {

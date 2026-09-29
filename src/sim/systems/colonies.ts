@@ -1,7 +1,7 @@
 // Founding settlements and changing their constitutional status.
 import type { GameState, CommandResult, Settlement } from '../types';
 import { SITE } from '../content/sites';
-import { FACILITY } from '../content/facilities';
+import { FACILITY, facilityJobs } from '../content/facilities';
 import { SETTLEMENT_NAMES } from '../content/misc';
 import { mod } from './modifiers';
 import { createSettlement, addFacility, addAdults } from './factory';
@@ -65,16 +65,28 @@ export function foundingPlan(s: GameState, siteId: string, actor: string): Found
   // Reachability: some public or owned design must be able to deliver cargo
   const hub = earthHub(s);
   if (!hub) return fail('No Earth orbit hub.');
-  let reachableBy: string | undefined;
-  for (const d of Object.values(s.designs).sort((a, b) => (a.id < b.id ? -1 : 1))) {
-    if (d.owner !== 'public' && d.owner !== actor && d.owner !== 'une') continue;
-    const plan = planFor(s, d, SITE[hub.siteId].node, site.node);
-    if (plan.feasible && plan.payload >= 10) {
-      reachableBy = d.name;
-      break;
+  const designs = Object.values(s.designs).filter((d) => !d.obsolete && (d.owner === 'public' || d.owner === actor || d.owner === 'une')).sort((a, b) => (a.id < b.id ? -1 : 1));
+  const hubNode = SITE[hub.siteId].node;
+  let reachableBy = designs.find((d) => {
+    const plan = planFor(s, d, hubNode, site.node);
+    return plan.feasible && plan.payload >= 10;
+  })?.name;
+  let crewExtra = 0;
+  if (!reachableBy) {
+    // One-way delivery: landers refuel for the trip home from a propellant plant the expedition builds
+    const oneWay = designs.find((d) => {
+      const plan = planFor(s, d, hubNode, site.node, undefined, [site.node]);
+      return plan.feasible && plan.payload >= 10;
+    });
+    const isru = oneWay ? isruPackage(s, siteId, actor) : null;
+    if (!oneWay) return fail('No existing ship design can deliver cargo there from Earth orbit. Design a capable ship or research better propulsion.');
+    if (!isru) return fail(`Ships cannot fly home from ${site.name} without refuelling there, and no local propellant production is possible yet (it needs water ice or an atmosphere and the right technology).`);
+    reachableBy = `${oneWay.name} (one-way, refuelled by local ISRU)`;
+    for (const p of isru) {
+      pkg.push(p);
+      crewExtra += facilityJobs(FACILITY[p.type]) * p.count;
     }
   }
-  if (!reachableBy) return fail('No existing ship design can deliver cargo there from Earth orbit. Design a capable ship or research better propulsion.');
   let mass = 0, cost = 0;
   for (const p of pkg) {
     const def = FACILITY[p.type];
@@ -86,7 +98,25 @@ export function foundingPlan(s: GameState, siteId: string, actor: string): Found
   const transport = mass * perT * 1.3;
   let discount = 1 - (actor === 'une' ? (s.une.institutions.sda?.effectiveness ?? 1) * 0.1 : 0);
   if (site.region === 'mars') discount *= 1 - (mod(s, 'marsDiscount') ?? 0);
-  return { ok: true, facilities: pkg, mass, cost: cost * discount, transport: transport * discount, crew: site.kind === 'orbital' ? 6 : 8, reachableBy };
+  return { ok: true, facilities: pkg, mass, cost: cost * discount, transport: transport * discount, crew: (site.kind === 'orbital' ? 6 : 8) + Math.ceil(crewExtra), reachableBy };
+}
+
+/** Local propellant production for a base that ships must refuel at, with the power to run it. */
+function isruPackage(s: GameState, siteId: string, actor: string): { type: string; count: number }[] | null {
+  const site = SITE[siteId];
+  const out: { type: string; count: number }[] = [];
+  let power = 0;
+  if (site.deposits.some((d) => d.type === 'ice') && usable(s, actor, FACILITY.propellantPlant.tech) && FACILITY.iceMine.allowed.includes(site.kind)) {
+    out.push({ type: 'iceMine', count: 1 }, { type: 'propellantPlant', count: 1 });
+    power = FACILITY.iceMine.power + FACILITY.propellantPlant.power;
+  } else if (site.deposits.some((d) => d.type === 'atmosphere') && usable(s, actor, 'atmospheric_isru')) {
+    out.push({ type: 'atmosphereProcessor', count: 1 }, { type: 'sabatierReactor', count: 1 });
+    power = FACILITY.atmosphereProcessor.power + FACILITY.sabatierReactor.power;
+  } else return null;
+  const flux = solarFluxFactor(site.body) * site.illumination;
+  if (usable(s, actor, 'surface_fission')) out.push({ type: 'fissionReactor', count: 1 });
+  else out.push({ type: 'solarArray', count: Math.ceil((power * 1.2) / Math.max(0.05, 2 * flux)) });
+  return out;
 }
 
 export function foundSettlement(s: GameState, siteId: string, actor: string, name?: string): CommandResult {
@@ -102,7 +132,12 @@ export function foundSettlement(s: GameState, siteId: string, actor: string, nam
   const st = createSettlement(s, siteId, nm, actor, sponsors, 'outpost');
   for (const p of plan.facilities) addFacility(st, p.type, actor, p.count, s.day);
   addAdults(st.pop, plan.crew);
-  st.stock = { oxygen: plan.crew * 0.2, water: plan.crew * 1.5, food: plan.crew * 0.3, supplies: plan.crew * 0.1, nitrogen: 1, phosphorus: 0.5 };
+  // Twelve months of consumables, plus seed hydrogen for Sabatier propellant production
+  st.stock = { oxygen: plan.crew * 0.35, water: plan.crew * 2.5, food: plan.crew * 0.5, supplies: plan.crew * 0.15, nitrogen: 1, phosphorus: 0.5 };
+  if (plan.facilities.some((p) => p.type === 'sabatierReactor')) st.stock.hydrogen = 20;
+  if (plan.facilities.some((p) => p.type === 'propellantPlant' || p.type === 'sabatierReactor')) st.stock.propellant = 150;
+  const reactors = plan.facilities.filter((p) => p.type === 'fissionReactor').reduce((a, p) => a + p.count, 0);
+  if (reactors > 0) st.stock.reactorFuel = reactors * (FACILITY.fissionReactor.recipe?.in.reactorFuel ?? 0.05) * 5;
   initSettlementFactions(s, st);
   const who = actor === 'une' ? 'The Solar Development Authority' : s.nations[actor]?.name ?? s.corporations[actor]?.name ?? actor;
   addHistory(s, `${nm} founded`, `${who} establishes ${nm} at ${site.name}. It is delivered by ${plan.reachableBy} and staffed by ${plan.crew} pioneers.`, 'colony', site.region === 'luna' || site.region === 'earthOrbit' ? 2 : 3, [st.id]);

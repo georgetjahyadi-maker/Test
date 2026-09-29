@@ -14,6 +14,7 @@ import { lightDelaySeconds } from '../physics/orbits';
 import { BD, setExplain } from '../core/breakdown';
 
 const DT = 1 / 12;
+const LIFE_RESERVED = new Set(['water', 'oxygen', 'food']);
 
 // Annual mortality by 5-year band (0-4 ... 80+)
 const BASE_MORTALITY = [0.004, 0.0003, 0.0003, 0.0006, 0.0008, 0.0009, 0.0011, 0.0015, 0.002, 0.003, 0.0045, 0.007, 0.011, 0.017, 0.028, 0.045, 0.14];
@@ -51,6 +52,13 @@ function take(st: Settlement, g: string, amt: number): number {
     st.consumption[g] = (st.consumption[g] ?? 0) + t;
   }
   return t;
+}
+
+/** Take what is available and record the rest as a shortfall that logistics will try to fill. */
+function takeOrWant(st: Settlement, g: string, amt: number): number {
+  const got = take(st, g, amt);
+  if (amt - got > 1e-9) (st.shortfall ??= {})[g] = (st.shortfall![g] ?? 0) + (amt - got);
+  return got;
 }
 
 function put(st: Settlement, g: string, amt: number): void {
@@ -96,8 +104,13 @@ function updateSettlement(s: GameState, st: Settlement): void {
   const site = siteOf(st);
   const body = BODY[site.body];
   const pop = popOf(st);
+  const prevUse: Stock = {};
+  for (const g in st.consumption) prevUse[g] = (prevUse[g] ?? 0) + st.consumption[g];
+  for (const g in st.exports) prevUse[g] = (prevUse[g] ?? 0) + st.exports[g];
+  for (const g in st.routeDraw) prevUse[g] = (prevUse[g] ?? 0) + st.routeDraw[g];
   st.production = {};
   st.consumption = {};
+  st.shortfall = {};
   const flux = solarFluxFactor(site.body);
   const outputValueByOwner: Record<string, number> = {};
   let royaltyBase = 0;
@@ -110,9 +123,10 @@ function updateSettlement(s: GameState, st: Settlement): void {
     if (!def || f.count <= 0) continue;
     const n = f.count;
     if (def.housing) {
-      housing += def.housing * n * (f.condition > 0.2 ? 1 : 0.5);
-      shieldH += def.housing * n * (def.shielding ?? 0);
-      gravH += def.housing * n * (def.gravity ?? 0);
+      const h = def.housing * n * (f.condition > 0.2 ? 1 : 0.5);
+      housing += h;
+      shieldH += h * (def.shielding ?? 0);
+      gravH += h * (def.gravity ?? 0);
     }
     storage += (def.storage ?? 0) * n;
     propStore += (def.propellantStorage ?? 0) * n;
@@ -160,7 +174,8 @@ function updateSettlement(s: GameState, st: Settlement): void {
   const jobFactor = Math.max(0.08, 1 - 0.14 * (automation - 1));
   const jobs = jobsRaw * jobFactor;
   const skilledJobs = skilledRaw * jobFactor;
-  const serviceJobs = pop * 0.06;
+  // Services, construction, administration, education and health employ much of the population
+  const serviceJobs = workforce * 0.75;
   const laborRatio = jobs > 0 ? Math.min(1, workforce / jobs) : 1;
   const skilledWorkers = workforce * st.pop.educated;
   const skillRatio = skilledJobs > 0 ? Math.min(1, skilledWorkers / skilledJobs) : 1;
@@ -173,12 +188,29 @@ function updateSettlement(s: GameState, st: Settlement): void {
 
   // ---------------------------------------------------------------- Energy
   const sorted = [...st.facilities].sort((a, b2) => (CATEGORY_ORDER[FACILITY[a.type]?.category] ?? 20) - (CATEGORY_ORDER[FACILITY[b2.type]?.category] ?? 20) || (a.id < b2.id ? -1 : 1));
+  // Output nobody uses piles up; plants throttle back once a good is overstocked
+  const overstocked = (g: string) => (st.stock[g] ?? 0) > Math.max(300, (prevUse[g] ?? 0) * 8 + (st.demand[g] ?? 0) * 2);
+  // Facilities that cannot run for lack of inputs, or whose output is not needed, draw little power
+  const runFactor = (f: FacilityGroup): number => {
+    const def = FACILITY[f.type];
+    if (!def) return 0;
+    let r = 1;
+    if (def.recipe && !def.gen) {
+      for (const g in def.recipe.in) {
+        const need = def.recipe.in[g] * f.count * DT;
+        if (need > 0) r = Math.min(r, (st.stock[g] ?? 0) / need);
+      }
+      const outs = Object.keys(def.recipe.out);
+      if (outs.length && outs.every((g) => overstocked(g))) r = Math.min(r, 0.15);
+    }
+    return clamp(r, 0.05, 1);
+  };
   let essentialDemand = pop * 0.003;
   let industrialDemand = 0;
   for (const f of st.facilities) {
     const def = FACILITY[f.type];
     if (!def || !f.enabled || f.count <= 0) continue;
-    const p = def.power * f.count;
+    const p = def.power * f.count * runFactor(f);
     if (ESSENTIAL.has(def.category)) essentialDemand += p;
     else industrialDemand += p;
   }
@@ -202,7 +234,7 @@ function updateSettlement(s: GameState, st: Settlement): void {
       let ratio = 1;
       for (const g in def.recipe.in) {
         const need = def.recipe.in[g] * f.count * DT * effMult;
-        const got = take(st, g, need);
+        const got = takeOrWant(st, g, need);
         ratio = Math.min(ratio, need > 0 ? got / need : 1);
       }
       if (def.genType === 'fusion') out *= 1 + (m.fusionEfficiency ?? 0) * 0.3;
@@ -226,6 +258,15 @@ function updateSettlement(s: GameState, st: Settlement): void {
   st.energy = { gen, demand: demandTotal, storage: storageMWh, ratio: demandTotal > 0 ? Math.min(1, gen / demandTotal) : 1, bySource };
 
   // ---------------------------------------------------------------- Operations
+  // Industry may not eat into three months of the residents' own water, oxygen and food
+  const lsServed0 = pop > 0 ? Math.min(pop, lsCap) / pop : 1;
+  const rW0 = clamp(m.lsWater ?? 0.93, 0, 0.995), rO0 = clamp(m.lsOxygen ?? 0.45, 0, 0.99);
+  const lifeReserve: Stock = {
+    water: 3 * pop * PER_CAPITA.water * DT * (lsServed0 * (1 - rW0) + (1 - lsServed0)),
+    oxygen: 3 * pop * PER_CAPITA.oxygen * DT * (lsServed0 * (1 - rO0) + (1 - lsServed0)),
+    food: 3 * pop * PER_CAPITA.food * DT,
+  };
+  const availFor = (g: string) => Math.max(0, (st.stock[g] ?? 0) - (lifeReserve[g] ?? 0));
   const capYear = site.body === 'mercury' ? mercuryCapPerYear(s) * ((s.events.flags.mercuryShare as number) ?? 1) : Infinity;
   let mercuryMonthLeft = capYear / 12;
   const priceOf = (g: string) => price(s, st, g);
@@ -253,6 +294,12 @@ function updateSettlement(s: GameState, st: Settlement): void {
       } else {
         deps.sort((a, b2) => b2.grade / b2.difficulty - a.grade / a.difficulty);
         const dep = deps[0];
+        // Idle down when everything this deposit yields is already overstocked
+        const yieldsWanted = Object.keys(dep.yields).some((g) => dep.yields[g] > 0.002 && !overstocked(g));
+        if (!yieldsWanted) {
+          util *= 0.15;
+          limiting = 'Output not needed (storage full)';
+        }
         let ore = (def.mining.orePerYear * f.count * util * DT) / Math.sqrt(dep.difficulty);
         if (site.body === 'mercury') {
           if (ore > mercuryMonthLeft) {
@@ -273,29 +320,37 @@ function updateSettlement(s: GameState, st: Settlement): void {
         util = def.mining.orePerYear > 0 ? util * (ore / Math.max(1e-9, (def.mining.orePerYear * f.count * util * DT) / Math.sqrt(dep.difficulty))) : 0;
       }
     } else if (def.recipe && (Object.keys(def.recipe.in).length || Object.keys(def.recipe.out).length)) {
+      // Avoid producing goods nobody needs when storage is full
+      const outs = Object.keys(def.recipe.out);
+      if (outs.length && outs.every((g) => overstocked(g))) {
+        util *= 0.15;
+        limiting = 'Output not needed (storage full)';
+      }
       const scale = f.count * util * DT;
       let ratio = 1;
       let worst = '';
       for (const g in def.recipe.in) {
         const need = def.recipe.in[g] * scale;
         if (need <= 0) continue;
-        const r = Math.min(1, (st.stock[g] ?? 0) / need);
+        const r = Math.min(1, availFor(g) / need);
         if (r < ratio) {
           ratio = r;
           worst = g;
         }
       }
-      // Avoid producing goods nobody needs when storage is full
+      const critical = def.category === 'food' || def.category === 'lifeSupport';
       for (const g in def.recipe.in) {
         const t = take(st, g, def.recipe.in[g] * scale * ratio);
         inValue += t * priceOf(g);
+        // Farms and life-support plants ask logistics for the inputs they lacked
+        if (critical && ratio < 0.999) (st.shortfall ??= {})[g] = (st.shortfall![g] ?? 0) + def.recipe.in[g] * scale * (1 - ratio);
       }
       for (const g in def.recipe.out) {
         const amt = def.recipe.out[g] * scale * ratio;
         put(st, g, amt);
         outValue += amt * priceOf(g);
       }
-      if (ratio < 0.99 && scale > 0) limiting = `Short of ${GOOD[worst]?.name ?? worst}`;
+      if (ratio < 0.99 && scale > 0) limiting = LIFE_RESERVED.has(worst) && (st.stock[worst] ?? 0) > 0 ? `${GOOD[worst]?.name ?? worst} reserved for residents` : `Short of ${GOOD[worst]?.name ?? worst}`;
       util *= ratio;
     }
     f.utilization = util;
@@ -352,7 +407,7 @@ function updateSettlement(s: GameState, st: Settlement): void {
     for (const g in def.maintenance) {
       const nd = def.maintenance[g] * f.count * DT * mm;
       if (nd <= 0) continue;
-      const got = take(st, g, nd);
+      const got = takeOrWant(st, g, nd);
       debit(s, f.owner, got * priceOf(g), 'Facility maintenance');
       st.economy.treasury += got * priceOf(g);
       ratio = Math.min(ratio, got / nd);
@@ -471,7 +526,8 @@ function updateSettlement(s: GameState, st: Settlement): void {
     if (v >= 0) credit(s, owner, v, 'Facility income');
     else debit(s, owner, -v, 'Facility operations');
   }
-  const gdp = sumValue(s, st, st.production) * 12 + pop * 25000;
+  // Output at local prices plus the value added by everyone at work
+  const gdp = sumValue(s, st, st.production) * 12 + employedNow * wage * 1.4 + pop * 5000;
   st.economy.gdp = gdp;
   // Local taxes for governed settlements
   if (isGoverned(st)) {
@@ -517,7 +573,7 @@ function settleAccounts(s: GameState, st: Settlement, lifeValue: number): void {
     // Governed settlements may run modest debts; the UNE (ETSA) cushions small colonies.
     if (bal < 0 && st.status !== 'independent' && st.status !== 'associated') {
       const pop = popOf(st);
-      const support = Math.min(-bal, pop * 20000 * DT + 5e7 * DT);
+      const support = Math.min(-bal, pop * 60000 * DT + 5e7 * DT);
       debit(s, 'une', support, 'Settlement support');
       st.economy.treasury += support;
       st.economy.uneTransfer = support;
@@ -647,7 +703,8 @@ function updatePopulation(s: GameState, st: Settlement, c: PopCtx): void {
   const vacancy = Math.max(0, c.jobs - c.workforce);
   const shortage = c.short.oxygen + c.short.water + c.short.food > 0.05;
   const attract = clamp(p.wellbeing * (1 - p.unemployment) * (shortage ? 0.2 : 1), 0, 1);
-  const baseDemand = Math.min(room, vacancy * 1.25 + (st.status !== 'outpost' ? room * 0.04 : 0));
+  const secure = Math.min(st.lifeSupport.reserveDays.water ?? 999, st.lifeSupport.reserveDays.oxygen ?? 999, st.lifeSupport.reserveDays.food ?? 999) > 30;
+  const baseDemand = secure ? Math.min(room, vacancy * 1.25 + (st.status !== 'outpost' ? room * 0.04 : 0)) : 0;
   const migrationDemand = baseDemand * (0.4 + attract) * (1 + (m.migration ?? 0));
   st.flags.migrationDemand = migrationDemand;
   // Commercial crew service in cislunar space

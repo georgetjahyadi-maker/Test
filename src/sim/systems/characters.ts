@@ -98,6 +98,18 @@ export function charactersAnnual(s: GameState): void {
 
 function handleVacancy(s: GameState, c: Character, reason: string): void {
   const verb = reason === 'died' ? 'has died' : 'has retired';
+  // Only a sitting office-holder leaves a vacancy; former holders keep their old role label
+  const holds =
+    c.role === 'sg' ? s.une.sgId === c.id
+    : c.role === 'council' ? s.une.councilIds.includes(c.id)
+    : c.role === 'leader' ? !!c.nationId && s.nations[c.nationId]?.leaderId === c.id
+    : c.role === 'ceo' ? !!c.roleRef && s.corporations[c.roleRef]?.ceoId === c.id
+    : c.role === 'governor' ? !!c.roleRef && s.settlements[c.roleRef]?.governorId === c.id
+    : true;
+  if (!holds) {
+    if (c.role === 'sg' && reason === 'died') addHistory(s, `Former Secretary-General ${c.name} dies`, `${c.name}, a former Secretary-General of the ${s.une.short}, has died.`, 'politics', 1, [c.id]);
+    return;
+  }
   switch (c.role) {
     case 'sg': {
       const fac = s.une.coalition[0] ?? 'federalists';

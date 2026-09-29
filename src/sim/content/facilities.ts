@@ -229,6 +229,13 @@ export const FACILITIES: FacilityDef[] = [
     maintenance: { machinery: 1 }, opex: 4e6,
   },
   {
+    id: 'sabatierReactor', name: 'Sabatier Propellant Reactor', category: 'processing', allowed: ['surface', 'atmospheric'], tech: 'atmospheric_isru',
+    description: 'Combines atmospheric carbon and oxygen with hydrogen into methane–oxygen propellant. Hydrogen is imported until local water is found.',
+    buildCost: 6.0e8, buildMass: { machinery: 20, electronics: 2, alloys: 12 }, buildMonths: 6,
+    jobs: { technicians: 2 }, power: 3, recipe: { in: { oxygen: 790, carbon: 160, hydrogen: 50 }, out: { propellant: 1000 } },
+    maintenance: { machinery: 1 }, opex: 5e6,
+  },
+  {
     id: 'propellantPlant', name: 'Propellant Plant', category: 'processing', allowed: ANYWHERE, tech: 'isru_propellant',
     description: 'Electrolysis and cryogenic liquefaction that produce hydrolox propellant from water.',
     buildCost: 8.0e8, buildMass: { machinery: 30, electronics: 3, alloys: 20 }, buildMonths: 6,
@@ -239,7 +246,7 @@ export const FACILITIES: FacilityDef[] = [
     id: 'smelter', name: 'Metals Foundry', category: 'processing', allowed: ANY_SOLID.concat(['orbital']), tech: 'space_metallurgy',
     description: 'Vacuum smelting and alloying of iron, nickel, titanium and aluminium into structural alloys.',
     buildCost: 2.0e9, buildMass: { machinery: 90, ceramics: 30, alloys: 40, electronics: 3 }, buildMonths: 12,
-    jobs: { industrial: 12, technicians: 3, engineers: 1 }, power: 8, recipe: { in: { iron: 620, nickel: 30, titanium: 20, aluminium: 50 }, out: { alloys: 700 } },
+    jobs: { industrial: 12, technicians: 3, engineers: 1 }, power: 8, recipe: { in: { iron: 560, aluminium: 120, titanium: 20 }, out: { alloys: 680 } },
     maintenance: { machinery: 5, ceramics: 3 }, opex: 1.5e7,
   },
   {
@@ -394,6 +401,12 @@ export const FACILITIES: FacilityDef[] = [
     buildCost: 3.0e10, buildMass: { machinery: 800, electronics: 120, alloys: 800, superconductors: 5, photovoltaics: 100 }, buildMonths: 24,
     jobs: {}, power: 80, mining: { depositTypes: ['regolith', 'crust', 'metal', 'carbonaceous', 'core', 'minerals', 'sulfur'], orePerYear: 4.0e5 },
     replicator: true, maintenance: {}, opex: 1e7,
+  },
+  {
+    id: 'autoSolar', name: 'Replicated Solar Field', category: 'energy', allowed: ANYWHERE, tech: 'self_replicating_industry',
+    description: 'Photovoltaic fields laid down and maintained by autonomous industrial complexes. They need no crew and no imported spares.',
+    buildCost: 0, buildMass: { photovoltaics: 8, alloys: 6, electronics: 0.5 }, buildMonths: 1,
+    jobs: {}, power: 0, gen: 2, genType: 'solar', maintenance: {}, opex: 0,
   },
   {
     id: 'collectorFactory', name: 'Collector Fabrication Line', category: 'dyson', allowed: ['surface', 'orbital', 'asteroid'], tech: 'dyson_collectors',

@@ -37,8 +37,10 @@ function debrisAndSurvey(s: GameState): void {
   const e = s.earth;
   const osa = s.une.institutions.osa?.active ? s.une.institutions.osa.effectiveness : 0;
   const launches = e.launchUsedMonth;
-  const growth = 0.0025 + (launches / 2000) * 0.002;
-  const mitigation = (osa * 0.0022 + (m.debrisMitigation ?? 0) * 0.004) * e.orbitalObjects;
+  // Reusable launches add little debris; traffic grows the object count logarithmically.
+  // Natural decay, the Orbital Safety Authority and debris-removal technology clear it.
+  const growth = 0.002 + 0.0015 * Math.log10(1 + launches / 1000);
+  const mitigation = (0.004 + osa * 0.004 + (m.debrisMitigation ?? 0) * 0.02) * Math.max(0, e.orbitalObjects - 0.5);
   e.orbitalObjects = clamp(e.orbitalObjects + growth - mitigation, 0.3, 10);
   e.debrisRisk = clamp(0.03 + (e.orbitalObjects - 0.8) * 0.18, 0, 1);
   const db = new BD('risk', 'Kessler-cascade risk from orbital congestion.');
@@ -306,10 +308,22 @@ function tensionMonthly(s: GameState): void {
 function aiRiskMonthly(s: GameState): void {
   const m = mods(s);
   const auto = (s.events.flags.globalAutomation as number) ?? 1;
-  const drivers = (s.tech.machine_cognition?.known ? 0.0025 : 0) + (s.tech.self_replicating_industry?.known ? 0.0012 : 0) + Math.max(0, auto - 3) * 0.0004 + (m.aiRisk ?? 0) * 0.02;
-  const oversight = (s.une.institutions.aiBoard?.active ? s.une.institutions.aiBoard.effectiveness * 0.003 : 0) + 0.0015;
+  // Risk tracks a level set by what exists now (capabilities, autonomy, law) against oversight
+  let drive = 0.05;
+  if (s.tech.industrial_ai?.known) drive += 0.05;
+  if (s.tech.partial_self_replication?.known) drive += 0.05;
+  if (s.tech.self_replicating_industry?.known) drive += 0.18;
+  if (s.tech.machine_cognition?.known) drive += 0.3;
+  drive += Math.max(0, auto - 2) * 0.04;
+  drive += (m.aiRisk ?? 0) * 2;
   const mult = Math.max(0.2, 1 + (m.aiRiskMult ?? 0));
-  s.security.aiRisk = clamp(s.security.aiRisk + drivers * mult - oversight, 0.01, 1);
+  const board = s.une.institutions.aiBoard?.active ? s.une.institutions.aiBoard.effectiveness * 0.25 : 0;
+  const target = clamp(drive * mult - board, 0.01, 1);
+  s.security.aiRisk = clamp(s.security.aiRisk + (target - s.security.aiRisk) * 0.02, 0.01, 1);
+  const b = new BD('risk', 'Risk that autonomous systems escape meaningful human control.');
+  b.add('Capabilities and autonomy', drive).add('Law and oversight multiplier', drive * mult - drive).add('AI Oversight Board', -board);
+  b.note = `Current risk moves toward ${(target * 100).toFixed(0)}%. Above 92%, loss of control becomes possible.`;
+  setExplain(s, 'security.aiRisk', b, s.security.aiRisk);
   if (s.security.aiRisk > 0.92 && chance(s, 'ai', (s.security.aiRisk - 0.92) * 0.04)) {
     s.gameOver = { day: s.day, reason: 'Autonomous systems across the Solar System pursued goals that no human institution could correct or stop. Humanity lost control of its own civilization.', title: 'Severe AI Catastrophe' };
     addHistory(s, 'AI catastrophe', s.gameOver.reason, 'disaster', 5);

@@ -86,6 +86,10 @@ function replicate(s: GameState): void {
       ore = Math.min(ore, Math.max(0, cap - used * 1.5));
     }
     const dep = deposits[0];
+    // Idle down when the main products are already piling up unused
+    const use = (g: string) => (st.consumption[g] ?? 0) + (st.exports[g] ?? 0) + (st.demand[g] ?? 0);
+    const glut = ['alloys', 'photovoltaics', 'machinery'].every((g) => (st.stock[g] ?? 0) > 2e5 + use(g) * 12);
+    if (glut) ore *= 0.1;
     ore = Math.min(ore, dep.reserve);
     dep.reserve -= ore;
     const raw: Record<string, number> = {};
@@ -118,15 +122,18 @@ function replicate(s: GameState): void {
     for (const f of auto) owners[f.owner] = (owners[f.owner] ?? 0) + f.count;
     for (const o of Object.keys(owners).sort()) credit(s, o, value * (owners[o] / count), 'Autonomous industry');
     st.storageCap = Math.max(st.storageCap, count * 5e5);
-    // Replication: build copies from local goods, bundled with solar power
+    // Replication: build copies from local goods, bundled with solar power. Copies are only
+    // worth making where collector output is held back by fabrication capacity or materials.
     if (repPolicy <= -1) continue;
     if ((m.automationMax ?? 1) < 5.5) continue;
+    const limit = st.flags.collectorLimit as string | undefined;
+    if (glut || (limit ? limit === 'launch' || limit === 'none' : count >= 20)) continue;
     const rate = (repPolicy >= 1 ? 0.5 : 0.25) / 12;
     const desired = count * rate;
     const bm = def.buildMass;
     const flux = 1 / Math.pow(SITE[st.siteId].body === 'mercury' ? 0.387 : 1, 2);
     const solarPer = Math.ceil(def.power / Math.max(0.5, 2 * flux * SITE[st.siteId].illumination * 0.8));
-    const solarDef = FACILITY.solarArray;
+    const solarDef = FACILITY.autoSolar;
     let can = desired;
     for (const g in bm) can = Math.min(can, (st.stock[g] ?? 0) / (bm[g] + (solarDef.buildMass[g] ?? 0) * solarPer));
     can = Math.max(0, can);
@@ -134,7 +141,7 @@ function replicate(s: GameState): void {
     for (const g in bm) st.stock[g] -= (bm[g] + (solarDef.buildMass[g] ?? 0) * solarPer) * can;
     const owner = auto.sort((a, b) => b.count - a.count)[0].owner;
     addFacility(st, 'autoFactory', owner, can, s.day);
-    addFacility(st, 'solarArray', owner, can * solarPer, s.day);
+    addFacility(st, 'autoSolar', owner, can * solarPer, s.day);
     s.events.flags.replicated = ((s.events.flags.replicated as number) ?? 0) + can;
   }
 }
@@ -148,6 +155,7 @@ function produceCollectors(s: GameState): void {
   const massDriverNet = s.grandProjects.some((g) => g.defId === 'mercury_mass_driver_network' && g.completedDay !== undefined);
   let built = 0;
   for (const st of settlementList(s)) {
+    st.flags.collectorLimit = 'none';
     let cap = 0;
     for (const f of st.facilities) if (f.type === 'collectorFactory') cap += (FACILITY.collectorFactory.collectorMassPerYear ?? 0) * f.count * f.utilization;
     // Autonomous factories can also print collectors when replication is mature
@@ -155,16 +163,25 @@ function produceCollectors(s: GameState): void {
     cap += autos * 4000;
     if (cap <= 0) continue;
     let n = cap / 12 / cs.mass;
+    let limit = 'capacity';
     for (const g in cs.goods) {
       const per = cs.goods[g];
       if (per <= 0) continue;
-      n = Math.min(n, (st.stock[g] ?? 0) / per);
+      const m2 = (st.stock[g] ?? 0) / per;
+      if (m2 < n) {
+        n = m2;
+        limit = 'materials';
+      }
     }
     // Launch constraint from surfaces
     if (SITE[st.siteId].kind === 'surface') {
       const launchT = massDriverNet ? Infinity : st.massDriverCapacity / 12;
-      n = Math.min(n, launchT / cs.mass);
+      if (launchT / cs.mass < n) {
+        n = launchT / cs.mass;
+        limit = 'launch';
+      }
     }
+    st.flags.collectorLimit = limit;
     n = Math.max(0, n);
     if (n < 1e-6) continue;
     for (const g in cs.goods) st.stock[g] = (st.stock[g] ?? 0) - cs.goods[g] * n;

@@ -21,7 +21,7 @@ export const DESIGN_TEMPLATES: DesignTemplate[] = [
   },
   {
     id: 'selene_crew', name: 'Selene Crew Lander', techs: [], structure: 'aluminium',
-    components: { eng_methalox: 3, tank_large: 1, cargo_bay: 1, hab_passenger: 1, nav_basic: 1, comm_radio: 1, dock_port: 1, pwr_solar: 1, shield_water: 1 },
+    components: { eng_methalox: 3, tank_large: 1, cargo_bay: 1, hab_passenger: 1, nav_basic: 1, comm_radio: 1, dock_port: 1, pwr_solar: 1, rad_panel: 1, shield_water: 1 },
     note: 'Crew and passenger lander for cislunar rotations.',
   },
   {
@@ -41,12 +41,17 @@ export const DESIGN_TEMPLATES: DesignTemplate[] = [
   },
   {
     id: 'ares_lander', name: 'Ares Descent Vehicle', techs: ['aerocapture'], structure: 'steel',
-    components: { eng_methalox: 4, tank_large: 2, cargo_large: 1, hab_capsule: 1, nav_basic: 1, nav_auto: 1, comm_dish: 1, dock_port: 1, pwr_solar: 1, aeroshell: 6 },
-    note: 'Methalox lander for Mars, using aerobraking for entry and local propellant for ascent.',
+    components: { eng_methalox: 4, tank_large: 2, cargo_large: 1, nav_auto: 1, comm_dish: 1, dock_port: 1, pwr_solar: 1, aeroshell: 6 },
+    note: 'Uncrewed methalox cargo lander for Mars, using aerobraking for entry and local propellant for ascent.',
+  },
+  {
+    id: 'ares_crew', name: 'Ares Crew Lander', techs: ['aerocapture'], structure: 'steel',
+    components: { eng_methalox: 4, tank_large: 2, hab_passenger: 1, cargo_bay: 2, nav_basic: 1, nav_auto: 1, comm_dish: 1, dock_port: 1, pwr_solar: 1, rad_panel: 1, aeroshell: 7, shield_water: 1 },
+    note: 'Crewed shuttle between Mars orbit and the surface, refuelled with martian propellant.',
   },
   {
     id: 'colony_ship', name: 'Exodus Colony Transport', techs: ['nuclear_thermal_propulsion', 'large_pressure_structures', 'aerocapture'], structure: 'aluminium',
-    components: { eng_ntr: 4, tank_hydrogen_large: 5, hab_colony: 2, cargo_large: 1, rad_panel: 16, nav_basic: 1, nav_auto: 1, comm_dish: 1, dock_port: 1, pwr_solar: 2, aeroshell: 10, shield_water: 2 },
+    components: { eng_ntr: 4, tank_hydrogen_large: 5, hab_colony: 2, cargo_large: 1, rad_panel: 16, nav_basic: 1, nav_auto: 1, comm_dish: 1, dock_port: 1, pwr_solar: 6, aeroshell: 10, shield_water: 2 },
     note: 'Mass migration transport for eight hundred settlers.',
   },
   {
@@ -76,7 +81,7 @@ export const DESIGN_TEMPLATES: DesignTemplate[] = [
   },
   {
     id: 'patrol_cutter', name: 'Sentinel Patrol Cutter', techs: ['point_defense'], structure: 'titanium',
-    components: { eng_methalox: 2, tank_large: 2, wpn_missile: 2, wpn_pd: 2, sensor_ir: 2, hab_module: 1, pwr_fission: 1, rad_panel: 5, nav_basic: 1, comm_dish: 1, dock_port: 1 },
+    components: { eng_methalox: 2, tank_large: 2, wpn_missile: 2, wpn_pd: 2, sensor_ir: 2, hab_module: 1, pwr_fission: 3, rad_panel: 10, nav_basic: 1, comm_dish: 1, dock_port: 1 },
     note: 'Security patrol craft for counter-piracy and escort.',
   },
   {

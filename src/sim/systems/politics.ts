@@ -134,13 +134,23 @@ export function politicsMonthly(s: GameState): void {
   for (const id of Object.keys(s.nations).sort()) {
     const n = s.nations[id];
     const fs = n.factionSupport;
-    for (const f in s.factions) {
+    // Support moves toward a target: the long-run alignment shifted by current pressures
+    const base = (n.factionBase ??= { ...fs });
+    const aim: Record<string, number> = {};
+    for (const f of Object.keys(s.factions).sort()) {
       if (!s.factions[f].active) continue;
+      base[f] ??= 0.02;
+      aim[f] = base[f] * Math.exp(clamp(mo[f] ?? 0, -1.2, 1.2) * 1.2);
+    }
+    normalize(aim, s);
+    for (const f of Object.keys(aim).sort()) {
       const cur = fs[f] ?? 0.01;
-      const noise = gaussian(s, 'politics') * 0.02;
-      fs[f] = cur * Math.exp((mo[f] ?? 0) * 0.05 + noise * 0.3);
+      fs[f] = Math.max(0.001, cur + (aim[f] - cur) * 0.04 + gaussian(s, 'politics') * 0.002);
     }
     normalize(fs, s);
+    // Slow realignment: sustained change becomes the new normal over generations
+    for (const f in aim) base[f] += ((fs[f] ?? 0) - base[f]) * 0.002;
+    normalize(base, s);
     // Public opinion of the UNE
     const target = clamp(0.35 + (s.une.metrics.legitimacy ?? 0.6) * 0.3 + (fs.federalists ?? 0) - (fs.sovereigntists ?? 0) * 0.8 + (mod(s, 'citizenSupport')) - n.grievances * 0.2 + ((s.events.flags.recentMilestone as number) ?? 0) * 0.05, 0.05, 0.95);
     n.publicOpinion += (target - n.publicOpinion) * 0.04;
@@ -220,14 +230,29 @@ function updateSettlementPolitics(s: GameState, st: Settlement, mo: Record<strin
   st.politics.grievances = clamp(st.politics.grievances * 0.95 + g * 0.05 * gMod, 0, 2);
   // Local identity strengthens colonial and solar-federal factions
   const localShare = 1 - (st.pop.cultures.terran ?? 0);
-  for (const f in s.factions) {
+  // Baseline: the political mix of the sponsoring societies the settlers came from
+  const base: Record<string, number> = {};
+  let bw = 0;
+  for (const k of Object.keys(st.sponsors).sort()) {
+    const n = s.nations[k];
+    if (!n) continue;
+    for (const f in n.factionSupport) base[f] = (base[f] ?? 0) + n.factionSupport[f] * st.sponsors[k];
+    bw += st.sponsors[k];
+  }
+  if (bw <= 0) Object.assign(base, { expansionists: 0.25, industrialists: 0.2, science: 0.2, corporate: 0.15, federalists: 0.1, labor: 0.1 });
+  const target: Record<string, number> = {};
+  for (const f of Object.keys(s.factions).sort()) {
     if (!s.factions[f].active) continue;
     let v = (mo[f] ?? 0) * 0.6;
     if (f === 'colonial') v += st.politics.grievances * 0.6 + localShare * 0.4 + Math.min(1, delayMin / 20) * 0.3 - 0.2;
     if (f === 'solarFederalists') v += localShare * 0.2 + (st.politics.represented ? 0.2 : 0);
     if (f === 'sovereigntists') v -= 0.3;
+    target[f] = Math.max(0.02, base[f] ?? 0.03) * Math.exp(clamp(v, -1.5, 1.5) * 1.4);
+  }
+  normalize(target, s);
+  for (const f of Object.keys(target).sort()) {
     const cur = fs[f] ?? 0.01;
-    fs[f] = cur * Math.exp(v * 0.05 + gaussian(s, 'politics') * 0.01);
+    fs[f] = Math.max(0.001, cur + (target[f] - cur) * 0.05 + gaussian(s, 'politics') * 0.002);
   }
   normalize(fs, s);
   // Sentiment toward the UNE and autonomy pressure
@@ -326,8 +351,8 @@ function corpInfluence(s: GameState): number {
 
 export function annualRevenue(s: GameState): number {
   let t = 0;
-  for (const k in s.une.revenueLastYear) t += s.une.revenueLastYear[k];
-  if (t <= 0) for (const k in s.une.revenueYTD) t += s.une.revenueYTD[k] * 12;
+  for (const k in s.une.revenueLastYear) if (k !== 'Bond issuance') t += s.une.revenueLastYear[k];
+  if (t <= 0) for (const k in s.une.revenueYTD) if (k !== 'Bond issuance') t += s.une.revenueYTD[k] * 12;
   return Math.max(t, 1e9);
 }
 

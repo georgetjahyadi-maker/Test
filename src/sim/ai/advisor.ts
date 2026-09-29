@@ -9,7 +9,7 @@ import { popOf, settlementList, regionOf, isGoverned, isIndependent, offworldPop
 import { annualRevenue } from '../systems/politics';
 import { scaleFor } from '../systems/une';
 import { availableTechs } from '../systems/research';
-import { lawAvailable, proposeBill } from '../systems/legislature';
+import { lawAvailable, proposeBill, projectVote, lobby, pledge } from '../systems/legislature';
 import { suggestFacilities, totalCost } from './planner';
 import { invest, ensureSupply } from './actions';
 import { foundingPlan, foundSettlement, grantStatus, statusRequirements } from '../systems/colonies';
@@ -27,6 +27,23 @@ export function advisorMonthly(s: GameState): void {
   if (d.legislation && month % 2 === 0) legislationAdvisor(s);
 }
 
+const CAPITAL_CATEGORIES = new Set(['Construction', 'Construction materials', 'Settlement founding', 'Shipbuilding', 'Planetary defense missions', 'Grand projects', 'Programs', 'Technology licenses', 'Cancelled projects', 'Debt repayment']);
+
+/** Last year's federal accounts: revenue (without borrowing), spending, recurring operations and the balance. */
+export function fiscal(s: GameState): { R: number; E: number; ops: number; surplus: number } {
+  const u = s.une;
+  const R = annualRevenue(s);
+  let E = 0, ops = 0;
+  const src = Object.keys(u.expenseLastYear).length ? u.expenseLastYear : u.expenseYTD;
+  const k12 = src === u.expenseYTD ? 12 / Math.max(1, civilFromDay(s.day).m) : 1;
+  for (const k in src) {
+    const v = src[k] * k12;
+    E += v;
+    if (!k.startsWith('Agency:') && !CAPITAL_CATEGORIES.has(k)) ops += v;
+  }
+  return { R, E, ops, surplus: R - E };
+}
+
 export function budgetAdvisor(s: GameState): void {
   const u = s.une;
   const R = annualRevenue(s);
@@ -36,7 +53,9 @@ export function budgetAdvisor(s: GameState): void {
     if (!inst.active) continue;
     target += (INSTITUTION[id]?.baseFunding ?? 1e9) * scaleFor(s, id);
   }
-  const room = R * 0.72;
+  // Agencies get what is left after recurring operations (fleets, settlement support, subsidies)
+  const f = fiscal(s);
+  const room = Math.max(R * 0.3, Math.min(R * 0.72, R - f.ops * 1.05 - R * 0.08));
   const k = target > room ? room / target : 1;
   const rich = u.treasury > R * 0.6 ? 1.1 : u.treasury < R * 0.08 ? 0.92 : 1;
   for (const id of Object.keys(u.institutions).sort()) {
@@ -82,7 +101,9 @@ function score(s: GameState, id: string): number {
 }
 
 export function logisticsAdvisor(s: GameState): void {
-  const budgetTotal = Math.min(Math.max(0, s.une.treasury) * 0.25, 4e10);
+  const f = fiscal(s);
+  const strained = f.surplus < 0 || s.une.debt > f.R * 0.5;
+  const budgetTotal = strained ? Math.min(Math.max(0, s.une.treasury) * 0.1, 1e10) : Math.min(Math.max(0, s.une.treasury) * 0.25, 4e10);
   let budget = budgetTotal;
   const list = settlementList(s).filter((st) => !st.flags.earthHub && !isIndependent(st));
   list.sort((a, b) => (b.sponsors.une ?? 0) - (a.sponsors.une ?? 0) || popOf(b) - popOf(a));
@@ -91,6 +112,7 @@ export function logisticsAdvisor(s: GameState): void {
     const uneShare = st.sponsors.une ?? 0;
     const critical = (st.lifeSupport.reserveDays.oxygen ?? 999) < 90 || (st.lifeSupport.reserveDays.food ?? 999) < 60 || (st.lifeSupport.reserveDays.water ?? 999) < 90;
     if (uneShare < 0.2 && !critical && st.founder !== 'une') continue;
+    if (strained && !critical) continue;
     const r = ensureSupply(s, st, 'une', budget * 0.5);
     if (r.ok && !r.info) budget -= Math.min(budget, 3e9);
   }
@@ -99,13 +121,15 @@ export function logisticsAdvisor(s: GameState): void {
 export function constructionAdvisor(s: GameState): void {
   const R = annualRevenue(s);
   const reserve = R * 0.12;
+  const f = fiscal(s);
+  const essentialOnly = f.surplus < 0 || s.une.debt > R * 0.5;
   let projects = 0;
   const list = settlementList(s).filter((st) => (st.sponsors.une ?? 0) >= 0.3 && !isGoverned(st));
   list.sort((a, b) => popOf(b) - popOf(a));
   for (const st of list) {
     if (projects >= 3) break;
     if (st.construction.filter((p) => p.owner === 'une').length > 3 + popOf(st) / 5000) continue;
-    const sug = suggestFacilities(s, st, 'une');
+    const sug = suggestFacilities(s, st, 'une').filter((x) => !essentialOnly || x.priority >= 8);
     for (const sg of sug.slice(0, 3)) {
       const cost = totalCost(s, st, sg.type, sg.count);
       if (s.une.treasury - cost < reserve) continue;
@@ -125,6 +149,9 @@ const EXPANSION_ORDER = [
 export function expansionAdvisor(s: GameState): void {
   const R = annualRevenue(s);
   if (s.une.treasury < R * 0.3) return;
+  // Only expand what the budget can keep alive
+  const f = fiscal(s);
+  if (f.surplus < R * 0.05 || s.une.debt > R * 0.25) return;
   const taken = new Set(settlementList(s).map((st) => st.siteId));
   for (const site of EXPANSION_ORDER) {
     if (taken.has(site)) continue;
@@ -168,6 +195,54 @@ const LAW_PRIORITY: { id: string; when: (s: GameState) => boolean }[] = [
   { id: 'amd_emergency', when: (s) => s.day > 365 * 20 },
 ];
 
+const COSTLY_LAWS = new Set(['freight_subsidy', 'lunar_fund']);
+
+/** Work the votes on executive bills that are falling short: lobby swing delegations, offer pledges. */
+function whipBills(s: GameState): void {
+  for (const b of s.bills) {
+    if (b.stage !== 'debate' || b.sponsor !== 'executive') continue;
+    const t = projectVote(s, b);
+    if (t.nations.passed && t.assembly.passed) continue;
+    if (!t.nations.passed) {
+      // What is missing: member states or population?
+      const need = THRESHOLD_SHARE[t.nations.threshold] ?? { states: 0.5, pop: 0.5 };
+      const stateGap = need.states * t.nations.totalStates - t.nations.yesStates;
+      const popGap = need.pop * t.nations.totalPop - t.nations.yesPop;
+      const weight = (id: string) => {
+        const n = s.nations[id];
+        return (stateGap > 0 ? n.states / Math.max(1, t.nations.totalStates) : 0) + (popGap > 0 ? n.population / Math.max(1, t.nations.totalPop) : 0);
+      };
+      const swing = Object.keys(t.byNation).filter((id) => s.nations[id]?.member && t.byNation[id] < 0.5 && t.byNation[id] > 0.2 && (b.lobbying[id] ?? 0) < 3)
+        .sort((a, c) => (0.5 - t.byNation[a]) / Math.max(1e-6, weight(a)) - (0.5 - t.byNation[c]) / Math.max(1e-6, weight(c)) || (a < c ? -1 : 1));
+      for (const id of swing.slice(0, 2)) {
+        if (s.une.politicalCapital < 30) break;
+        lobby(s, b.id, id);
+      }
+      const f = fiscal(s);
+      if (swing.length && f.surplus > 0 && s.une.treasury > f.R * 0.3) {
+        const id = swing[0];
+        const amt = Math.min(s.nations[id].gdp * 0.0004 * 0.5, f.R * 0.02);
+        if (amt > 1e8 && (b.pledges[id] ?? 0) < amt) pledge(s, b.id, id, amt);
+      }
+    }
+    if (!t.assembly.passed) {
+      const swingF = Object.keys(t.byFaction).filter((id) => t.byFaction[id] < 0.5 && t.byFaction[id] > 0.25 && (b.lobbying[id] ?? 0) < 3)
+        .sort((a, c) => (s.factions[c]?.seats ?? 0) - (s.factions[a]?.seats ?? 0) || (a < c ? -1 : 1));
+      for (const id of swingF.slice(0, 2)) {
+        if (s.une.politicalCapital < 30) break;
+        lobby(s, b.id, id);
+      }
+    }
+  }
+}
+
+const THRESHOLD_SHARE: Record<string, { states: number; pop: number }> = {
+  simple: { states: 0.5, pop: 0 },
+  qualified: { states: 0.55, pop: 0.65 },
+  super: { states: 2 / 3, pop: 0.6 },
+  unanimous: { states: 1, pop: 0 },
+};
+
 export function legislationAdvisor(s: GameState): void {
   // Advance colonies that ask for it
   for (const st of settlementList(s)) {
@@ -178,6 +253,7 @@ export function legislationAdvisor(s: GameState): void {
     const req = statusRequirements(s, st, next);
     if (req.ok && (next === 'territory' || st.politics.autonomy > 0.35) && s.une.politicalCapital >= req.cost + 20) grantStatus(s, st.id, next as any);
   }
+  whipBills(s);
   if (s.bills.filter((b) => b.stage !== 'done').length >= 2) return;
   const failed = (s.events.flags.failedLaws ??= {}) as Record<string, number>;
   for (const b of s.bills) if (b.result === 'failed' || b.result === 'rejected') failed[b.lawId] = Math.max(failed[b.lawId] ?? 0, b.voteDay);
@@ -185,6 +261,7 @@ export function legislationAdvisor(s: GameState): void {
     if (s.laws[item.id]) continue;
     if (failed[item.id] && s.day - failed[item.id] < 365 * 4) continue;
     if (!item.when(s)) continue;
+    if (COSTLY_LAWS.has(item.id) && fiscal(s).surplus < annualRevenue(s) * 0.1) continue;
     const av = lawAvailable(s, item.id, 'enact');
     if (!av.ok) continue;
     const r = proposeBill(s, item.id, 'enact');

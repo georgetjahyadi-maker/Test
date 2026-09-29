@@ -7,12 +7,17 @@ import { hashSeed, gaussian, rand } from '../core/rng';
 import { clamp } from '../core/util';
 import { dayFromCivil } from '../core/time';
 import { makeCharacter } from './characters';
+import { BASE_LAUNCH_PRICE } from './logistics';
 import { createSettlement, addFacility, addAdults, createDesignFromTemplate, createFleet, createRoute } from './factory';
 import { addHistory } from './helpers';
 import { runAssemblyElection, formGovernment, initFactionSupport } from './politics';
 import { initStats } from './stats';
 
 export const SAVE_VERSION = 1;
+
+// National launch capacities in the content tables are relative weights; 2048
+// sees daily fully reusable heavy launches from about a dozen spaceports.
+const LAUNCH_SCALE = 3;
 
 const REGIONS = ['earth', 'earthOrbit', 'luna', 'nea', 'mars', 'venus', 'mercury', 'belt', 'jupiter', 'saturn', 'outer'];
 
@@ -69,7 +74,7 @@ export function createGame(seed: string): GameState {
     markets: {},
     earth: {
       launchCapacity: 0,
-      launchPrice: 250000,
+      launchPrice: BASE_LAUNCH_PRICE,
       launchUsedMonth: 0,
       launchDemandMonth: 0,
       prices: {},
@@ -133,7 +138,7 @@ export function createGame(seed: string): GameState {
     const n: Nation = {
       id: d.id, name: d.name, short: d.short, color: d.color, states: d.states, description: d.description, member: true,
       population: d.population, popGrowth: d.popGrowth, gdp: d.gdp, gdpGrowth: d.baseGrowth, baseGrowth: d.baseGrowth,
-      industry: d.gdp / 1e12, energyTW: d.energyTW, science: d.science, launchCapacity: d.launchCapacity, military: d.military,
+      industry: d.gdp / 1e12, energyTW: d.energyTW, science: d.science, launchCapacity: d.launchCapacity * LAUNCH_SCALE, military: d.military,
       debtRatio: d.debtRatio, ideology, publicOpinion: d.publicOpinion, uneSupport: d.uneSupport, integrationPref: d.integrationPref,
       stability: d.stability, spaceBudgetShare: d.spaceBudgetShare, spaceFunds: d.gdp * d.spaceBudgetShare * 0.5, relations: {},
       factionSupport: { ...d.factionSupport }, leaderId: '', nextLeadershipDay: Math.floor(rand(s, 'init') * d.leadershipCycle * 365),
@@ -141,7 +146,7 @@ export function createGame(seed: string): GameState {
       offworldInterest: Math.min(1, d.spaceBudgetShare * 700), nameCulture: d.nameCulture, emigrantsYear: 0, spaceInvestYear: 0,
     };
     s.nations[n.id] = n;
-    s.earth.launchCapacity += d.launchCapacity;
+    s.earth.launchCapacity += n.launchCapacity;
   }
   const nids = Object.keys(s.nations).sort();
   for (const a of nids) {

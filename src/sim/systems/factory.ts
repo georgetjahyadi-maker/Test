@@ -72,6 +72,8 @@ export function createSettlement(
     surplus: {},
     inTransit: {},
     routeDraw: {},
+    forward: {},
+    shortfall: {},
     closure: 0,
     automation: 1,
     science: 0,
@@ -157,6 +159,15 @@ export function createDesignFromTemplate(s: GameState, templateId: string, owner
 }
 
 export function createFleet(s: GameState, owner: string, designId: string, count: number, routeId?: string): Fleet {
+  // New ships join an existing fleet of the same design on the same assignment
+  for (const id of Object.keys(s.fleets).sort()) {
+    const f = s.fleets[id];
+    if (f.owner === owner && f.designId === designId && f.routeId === routeId && !f.patrolRegion) {
+      f.condition = (f.condition * f.count + count) / Math.max(1, f.count + count);
+      f.count += count;
+      return f;
+    }
+  }
   const f: Fleet = { id: nextId(s, 'flt'), owner, designId, count, routeId, condition: 1, built: s.day };
   s.fleets[f.id] = f;
   return f;

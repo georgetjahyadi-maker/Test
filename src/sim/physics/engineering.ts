@@ -178,7 +178,9 @@ export function computeDesignStats(design: Pick<VehicleDesign, 'components' | 's
   const accelFull = wetFull > 0 ? thrustEff / wetFull : 0; // kN / t = m/s^2
   const accelEmpty = wetEmpty > 0 ? thrustEff / wetEmpty : 0;
   if (aero > 0 && aero < wetFull) warnings.push(`Aeroshell protects ${fmt(aero)} t of ${fmt(wetFull)} t entry mass. Aerobraking is unavailable at full load.`);
-  const lowThrust = accelFull < 0.05;
+  // Electric and sail propulsion (millimetres per second squared) must spiral;
+  // fusion torches (centimetres per second squared) fly powered trajectories.
+  const lowThrust = accelFull < 0.005;
   const buildMonths = Math.min(36, 3 + complexity / 8);
   const maintenancePerYear = cost * 0.04;
   const combatRating = (combat + defense * 0.6 + sensor * 0.5) * (1 + Math.min(1, dvEmpty / 20)) * (1 + Math.min(1, accelEmpty / 5) * 0.5) * reliability;
@@ -393,7 +395,7 @@ export function planRoute(stats: DesignStats, fromNode: string, toNode: string, 
       // Excess delta-v shortens the transfer (torch ships ignore launch windows)
       const vBudget = stats.propellantless ? 40 : ve * Math.log((dry + payload + cap) / (dry + payload));
       const excess = vBudget - (segs.length ? Math.max(...segs.map((s) => s.dvOut)) : 0);
-      if (excess > 4 && stats.accelFull > 0.01) {
+      if (excess > 4 && stats.accelFull > 0.003) {
         const vCruise = excess / 2;
         const tAcc = (excess * 1000) / stats.accelFull; // seconds of burning, split in two
         const tCruise = (helioDist * 0.75) / (vCruise + 8); // seconds
@@ -417,19 +419,17 @@ export function planRoute(stats: DesignStats, fromNode: string, toNode: string, 
     rtt = syn > 0 ? Math.ceil(raw / syn - 0.02) * syn : raw;
     rtt = Math.max(rtt, raw);
   }
-  // Crew endurance
-  if (stats.crew > 0) {
-    const need = transit + (helio && !fast ? wait : 0);
-    if (stats.endurance < transit) issues.push(`Crew endurance ${stats.endurance.toFixed(0)} days is shorter than the ${transit.toFixed(0)}-day transit.`);
-    else if (stats.endurance < need) issues.push(`Crew must wait ${wait.toFixed(0)} days for the return window. Endurance ${stats.endurance.toFixed(0)} days is too short.`);
-  }
+  // Crew endurance: crews wait for the return window at the destination settlement
+  if (stats.crew > 0 && stats.endurance < transit) issues.push(`Crew endurance ${stats.endurance.toFixed(0)} days is shorter than the ${transit.toFixed(0)}-day transit.`);
   const tripsPerYear = rtt > 0 ? 365.25 / rtt : 0;
   const fusionFuelPerTrip = stats.fusionFuelRate > 0 ? Object.values(propDraw).reduce((a, b) => a + b, 0) * stats.fusionFuelRate : 0;
   const crewCost = stats.crew > 0 ? Math.min(stats.crew, 12) * 1.5e6 : 0;
   const opexPerTrip = (stats.maintenancePerYear + crewCost) * (rtt / 365.25) + stats.cost * 0.002;
   const burns = edges.length * 2;
   const rel = Math.min(0.99995, stats.reliability + ctx.reliabilityBonus);
-  const lossChance = Math.min(0.2, (1 - rel) * (1 + burns * 0.15));
+  // Component reliability is per mission cycle; reusable vehicles with abort modes lose a
+  // small fraction of that as hulls (about 1 in 500 flights for a typical 2048 freighter)
+  const lossChance = Math.min(0.05, (1 - rel) * 0.1 * (1 + burns * 0.1));
   const feasible = issues.length === 0 && (payload > 0 || stats.crew > 0);
   if (issues.length === 0 && payload <= 0 && stats.crew <= 0) issues.push('The ship cannot carry any payload on this route.');
   return {

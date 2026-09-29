@@ -58,13 +58,7 @@ export function nationsQuarterly(s: GameState): void {
         if (r.ok) actions++;
       }
     }
-    // Launch industry expansion under congestion
-    if (util > 0.8 && n.launchCapacity > 200 && n.spaceFunds > 5e9 && chance(s, 'nations', 0.5)) {
-      const add = n.launchCapacity * 0.08 + 300;
-      n.launchCapacity += add;
-      s.earth.launchCapacity += add;
-      n.spaceFunds -= 2e9;
-    }
+    void util;
     // Space budget drifts with ideology and success
     const exp = n.ideology[1] ?? 0;
     n.spaceBudgetShare = clamp(n.spaceBudgetShare * (1 + (exp * 0.01 + ((s.events.flags.recentMilestone as number) ?? 0) * 0.005 - Math.max(0, -n.gdpGrowth) * 0.5) / 4), 0.00005, 0.01);
@@ -95,16 +89,7 @@ export function corporationsQuarterly(s: GameState): void {
     if (!c.alive) continue;
     if (c.cash < 5e8 && c.debt > c.valuation * 0.3) continue;
     let budget = Math.max(0, c.cash * 0.5 + Math.max(0, c.valuation * 0.35 - c.debt) * 0.4) * appetite;
-    // Launch providers expand capacity under congestion
-    if (c.sector === 'launch' || c.id === 'argent' || c.id === 'longwei' || c.id === 'vyoma') {
-      if (util > 0.75 && budget > 3e9) {
-        const add = 1500 + s.earth.launchCapacity * 0.03;
-        s.earth.launchCapacity += add;
-        const cost = 2.5e9 + add * 1.5e6;
-        c.cash -= cost;
-        budget -= cost;
-      }
-    }
+    void util;
     // Logistics: serve settlements with unmet demand
     if (c.focus.includes('logistics') || c.sector === 'launch' || c.sector === 'logistics') {
       const hungry = settlementList(s).filter((st) => !st.flags.earthHub && Object.keys(st.demand).length > 0).sort((a, b) => popOf(b) - popOf(a));
@@ -127,6 +112,7 @@ export function corporationsQuarterly(s: GameState): void {
       if (!allowed) continue;
       for (const f of focusTypes(c.focus)) {
         if (!canBuild(s, st, id, f)) continue;
+        if (st.energy.ratio < 0.9 && (FACILITY[f]?.power ?? 0) > 0.1 && !FACILITY[f]?.gen) continue;
         if (st.construction.some((p) => p.type === f && p.owner === id)) continue;
         const roi = estimateROI(s, st, f);
         if (roi.roi >= hurdle) candidates.push({ st, type: f, roi: roi.roi, cost: roi.capex });
@@ -188,12 +174,14 @@ function pickResourceSite(s: GameState, actor: string): string | undefined {
 export function localGovernmentsMonthly(s: GameState): void {
   for (const st of settlementList(s)) {
     if (!isGoverned(st)) continue;
-    if (st.economy.treasury < 1e8) continue;
+    // Local governments may borrow for investment up to about a year of their output
+    const room = st.economy.treasury + Math.max(5e8, st.economy.gdp);
+    if (room < 1e8) continue;
     if (st.construction.length > 4 + popOf(st) / 20000) continue;
     const sug = suggestFacilities(s, st, st.id);
     for (const sg of sug.slice(0, 2)) {
       const cost = totalCost(s, st, sg.type, sg.count);
-      if (cost > st.economy.treasury * 0.8) continue;
+      if (cost > room * 0.5) continue;
       invest(s, st.id, st, sg.type, sg.count);
       break;
     }
