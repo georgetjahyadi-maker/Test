@@ -1,0 +1,30 @@
+{
+  "name": "helios-dawn-of-a-new-era",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "HELIOS: Dawn of a New Era - hard-SF grand strategy and civilization simulator",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "headless": "tsx tools/headless.ts"
+  },
+  "dependencies": {
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "@types/react": "19.1.12",
+    "@types/react-dom": "19.1.9",
+    "@vitejs/plugin-react": "4.7.0",
+    "playwright-core": "1.56.1",
+    "tsx": "4.20.5",
+    "typescript": "5.9.3",
+    "vite": "6.4.1",
+    "vitest": "3.2.4"
+  }
+}

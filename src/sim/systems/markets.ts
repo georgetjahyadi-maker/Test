@@ -1,0 +1,159 @@
+// Regional price formation between import-parity ceilings and export-netback floors.
+import type { GameState } from '../types';
+import { GOODS, GOOD } from '../content/goods';
+import { SITE } from '../content/sites';
+import { clamp } from '../core/util';
+import { shortestPath } from '../physics/deltav';
+import { BD, setExplain } from '../core/breakdown';
+import { known } from './helpers';
+
+export const REGION_NODE: Record<string, string> = {
+  earthOrbit: 'leo',
+  luna: 'luna_shackleton',
+  nea: 'nea_ryugu',
+  mars: 'mars_arcadia',
+  venus: 'venus_clouds',
+  mercury: 'mercury_caloris',
+  belt: 'ceres',
+  jupiter: 'callisto',
+  saturn: 'titan',
+  outer: 'triton',
+};
+
+export const REGION_NAME: Record<string, string> = {
+  earth: 'Earth',
+  earthOrbit: 'Earth Orbit',
+  luna: 'Luna',
+  nea: 'Near-Earth Asteroids',
+  mars: 'Mars',
+  venus: 'Venus',
+  mercury: 'Mercury',
+  belt: 'Main Belt',
+  jupiter: 'Jupiter System',
+  saturn: 'Saturn System',
+  outer: 'Outer System',
+};
+
+export function bestExhaustVelocity(s: GameState): number {
+  if (known(s, 'advanced_fusion_drives')) return 400;
+  if (known(s, 'fusion_drives')) return 150;
+  if (known(s, 'nuclear_electric_propulsion')) return 25;
+  if (known(s, 'nuclear_thermal_propulsion')) return 8.5;
+  return 3.7;
+}
+
+let dvCache: { key: string; table: Record<string, number> } | null = null;
+
+export function regionDv(s: GameState, from: string, to: string): number {
+  const key = `${known(s, 'aerocapture') ? 1 : 0}`;
+  if (!dvCache || dvCache.key !== key) dvCache = { key, table: {} };
+  const k = `${from}>${to}`;
+  if (dvCache.table[k] !== undefined) return dvCache.table[k];
+  const a = REGION_NODE[from], b = REGION_NODE[to];
+  let dv = 0;
+  if (a && b && a !== b) {
+    const p = shortestPath(a, b, { aero: true, aerocaptureTech: known(s, 'aerocapture'), lowThrust: false });
+    dv = p ? p.dv : 30;
+  }
+  dvCache.table[k] = dv;
+  return dv;
+}
+
+/** Estimated cost to move one tonne between regions with the best common technology. */
+export function freightEstimate(s: GameState, from: string, to: string, propPrice: number): number {
+  if (from === to) return 5000;
+  const dv = regionDv(s, from === 'earth' ? 'earthOrbit' : from, to === 'earth' ? 'earthOrbit' : to);
+  const ve = bestExhaustVelocity(s);
+  const k = Math.exp(Math.min(12, dv / ve)) - 1;
+  const oneWay = propPrice * k * 1.35 + 8000;
+  return oneWay;
+}
+
+export function marketsMonthly(s: GameState): void {
+  // --- Earth prices for goods supplied from space --------------------------
+  for (const g of GOODS) {
+    const del = s.earth.spaceDeliveries[g.id] ?? 0;
+    s.earth.spaceSupply[g.id] = (s.earth.spaceSupply[g.id] ?? 0) * (11 / 12) + del;
+    if (g.earthDemand) {
+      let demand = g.earthDemand;
+      if (g.id === 'fusionFuel' && known(s, 'fusion_power')) demand = 60 + ((s.events.flags.fusionYears as number) ?? 0) * 25;
+      const supply = s.earth.spaceSupply[g.id];
+      const pr = g.price * Math.pow(1 + supply / Math.max(1, demand), -1 / (g.elasticity ?? 1));
+      s.earth.prices[g.id] = Math.max(g.price * 0.02, pr);
+    } else {
+      s.earth.prices[g.id] = g.price;
+    }
+  }
+  s.earth.spaceDeliveries = {};
+  if (known(s, 'fusion_power')) s.events.flags.fusionYears = ((s.events.flags.fusionYears as number) ?? 0) + 1 / 12;
+
+  // --- Regional aggregates --------------------------------------------------
+  const regions = Object.keys(s.markets).filter((r) => r !== 'earth').sort();
+  const agg: Record<string, { supply: Record<string, number>; demand: Record<string, number>; count: number }> = {};
+  for (const r of regions) agg[r] = { supply: {}, demand: {}, count: 0 };
+  for (const id of Object.keys(s.settlements).sort()) {
+    const st = s.settlements[id];
+    const r = SITE[st.siteId].region;
+    const a = agg[r];
+    if (!a) continue;
+    a.count++;
+    for (const g in st.production) a.supply[g] = (a.supply[g] ?? 0) + st.production[g];
+    for (const g in st.imports) a.supply[g] = (a.supply[g] ?? 0) + st.imports[g];
+    for (const g in st.consumption) a.demand[g] = (a.demand[g] ?? 0) + st.consumption[g];
+    for (const g in st.exports) a.demand[g] = (a.demand[g] ?? 0) + st.exports[g];
+    for (const g in st.demand) a.demand[g] = (a.demand[g] ?? 0) + st.demand[g] * 0.25;
+  }
+  const earthOrbitPrice = (g: string) => (s.earth.prices[g] ?? GOOD[g].price) + s.earth.launchPrice;
+  for (const r of regions) {
+    const m = s.markets[r];
+    const a = agg[r];
+    const propLocal = r === 'earthOrbit' ? earthOrbitPrice('propellant') : Math.min(m.prices.propellant ?? 1e6, earthOrbitPrice('propellant'));
+    for (const g of GOODS) {
+      const id = g.id;
+      const earthP = s.earth.prices[id] ?? g.price;
+      // import parity from Earth
+      const fromEarth = r === 'earthOrbit' ? earthOrbitPrice(id) : earthOrbitPrice(id) + freightEstimate(s, 'earthOrbit', r, earthOrbitPrice('propellant'));
+      let ceiling = fromEarth;
+      // import parity from other regions with surplus
+      for (const q of regions) {
+        if (q === r) continue;
+        const aq = agg[q];
+        if ((aq.supply[id] ?? 0) <= (aq.demand[id] ?? 0) * 1.05) continue;
+        const cand = s.markets[q].prices[id] + freightEstimate(s, q, r, s.markets[q].prices.propellant ?? propLocal);
+        if (cand < ceiling) ceiling = cand;
+      }
+      // export netback floor
+      let floor = earthP * 0.03;
+      const toEarth = earthP - freightEstimate(s, r, 'earthOrbit', propLocal) * 0.5 - (r === 'earthOrbit' ? 0 : 20000);
+      if (toEarth > floor) floor = toEarth;
+      for (const q of regions) {
+        if (q === r) continue;
+        const aq = agg[q];
+        if ((aq.demand[id] ?? 0) <= (aq.supply[id] ?? 0)) continue;
+        const nb = s.markets[q].prices[id] - freightEstimate(s, r, q, propLocal);
+        if (nb > floor) floor = nb;
+      }
+      if (floor > ceiling) floor = ceiling * 0.95;
+      const S = a.supply[id] ?? 0;
+      const D = a.demand[id] ?? 0;
+      let p = m.prices[id] ?? ceiling;
+      if (S + D <= 1e-9) p = p + (ceiling * 0.85 - p) * 0.2;
+      else p = p * Math.exp(0.3 * clamp((D - S) / (D + S), -1, 1));
+      m.prices[id] = clamp(p, floor, ceiling);
+      m.ceiling[id] = ceiling;
+      m.floor[id] = floor;
+    }
+    m.supply = a.supply;
+    m.demand = a.demand;
+  }
+  const em = s.markets.earth;
+  for (const g of GOODS) {
+    em.prices[g.id] = s.earth.prices[g.id];
+    em.ceiling[g.id] = s.earth.prices[g.id];
+    em.floor[g.id] = s.earth.prices[g.id];
+  }
+  const w = new BD('cr/t', 'Luna water price between import parity (ceiling) and export netback (floor).');
+  w.add('Import parity from Earth (ceiling)', s.markets.luna.ceiling.water);
+  w.add('Export netback (floor)', s.markets.luna.floor.water);
+  setExplain(s, 'market.luna.water', w, s.markets.luna.prices.water);
+}
